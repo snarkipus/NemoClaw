@@ -96,6 +96,7 @@ RUN groupadd -r gateway && useradd -r -g gateway -d /sandbox -s /usr/sbin/nologi
 # Ref: https://github.com/NVIDIA/NemoClaw/issues/514
 RUN mkdir -p /sandbox/.openclaw-data/agents/main/agent \
         /sandbox/.openclaw-data/extensions \
+        /sandbox/.openclaw-data/plugin-runtime-deps \
         /sandbox/.openclaw-data/workspace \
         /sandbox/.openclaw-data/skills \
         /sandbox/.openclaw-data/hooks \
@@ -107,11 +108,15 @@ RUN mkdir -p /sandbox/.openclaw-data/agents/main/agent \
         /sandbox/.openclaw-data/logs \
         /sandbox/.openclaw-data/credentials \
         /sandbox/.openclaw-data/flows \
+        /sandbox/.openclaw-data/qmd \
         /sandbox/.openclaw-data/sandbox \
+        /sandbox/.openclaw-data/tasks \
         /sandbox/.openclaw-data/telegram \
+        /sandbox/.openclaw-data/wiki \
     && mkdir -p /sandbox/.openclaw \
     && ln -s /sandbox/.openclaw-data/agents /sandbox/.openclaw/agents \
     && ln -s /sandbox/.openclaw-data/extensions /sandbox/.openclaw/extensions \
+    && ln -s /sandbox/.openclaw-data/plugin-runtime-deps /sandbox/.openclaw/plugin-runtime-deps \
     && ln -s /sandbox/.openclaw-data/workspace /sandbox/.openclaw/workspace \
     && ln -s /sandbox/.openclaw-data/skills /sandbox/.openclaw/skills \
     && ln -s /sandbox/.openclaw-data/hooks /sandbox/.openclaw/hooks \
@@ -122,12 +127,15 @@ RUN mkdir -p /sandbox/.openclaw-data/agents/main/agent \
     && ln -s /sandbox/.openclaw-data/memory /sandbox/.openclaw/memory \
     && ln -s /sandbox/.openclaw-data/logs /sandbox/.openclaw/logs \
     && ln -s /sandbox/.openclaw-data/credentials /sandbox/.openclaw/credentials \
+    && ln -s /sandbox/.openclaw-data/qmd /sandbox/.openclaw/qmd \
     && ln -s /sandbox/.openclaw-data/sandbox /sandbox/.openclaw/sandbox \
+    && ln -s /sandbox/.openclaw-data/tasks /sandbox/.openclaw/tasks \
     && touch /sandbox/.openclaw-data/update-check.json \
     && ln -s /sandbox/.openclaw-data/update-check.json /sandbox/.openclaw/update-check.json \
     && touch /sandbox/.openclaw-data/exec-approvals.json \
     && ln -s /sandbox/.openclaw-data/exec-approvals.json /sandbox/.openclaw/exec-approvals.json \
     && ln -s /sandbox/.openclaw-data/telegram /sandbox/.openclaw/telegram \
+    && ln -s /sandbox/.openclaw-data/wiki /sandbox/.openclaw/wiki \
     && ln -s /sandbox/.openclaw-data/flows /sandbox/.openclaw/flows \
     && chown -R sandbox:sandbox /sandbox/.openclaw /sandbox/.openclaw-data
 
@@ -152,7 +160,7 @@ RUN printf '%s\n' \
 # OpenClaw version: change the OPENCLAW_VERSION ARG default so CI rebuilds
 # the base image on push to main, or use workflow_dispatch on base-image.yaml
 # with the openclaw_version input for a one-off build without editing this file.
-ARG OPENCLAW_VERSION=2026.4.9
+ARG OPENCLAW_VERSION=2026.4.24
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 

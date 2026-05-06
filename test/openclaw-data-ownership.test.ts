@@ -165,6 +165,7 @@ describe("fix_openclaw_data_ownership", () => {
     for (const sub of [
       "agents/main/agent",
       "extensions",
+      "plugin-runtime-deps",
       "workspace",
       "skills",
       "hooks",
@@ -172,6 +173,9 @@ describe("fix_openclaw_data_ownership", () => {
       "devices",
       "canvas",
       "cron",
+      "qmd",
+      "tasks",
+      "wiki",
     ]) {
       expect(fs.existsSync(path.join(dataDir, sub))).toBe(true);
     }

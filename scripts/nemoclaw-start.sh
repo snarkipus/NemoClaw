@@ -1474,7 +1474,7 @@ if [ "$(id -u)" -ne 0 ]; then
     local data_dir="${HOME}/.openclaw-data"
     local openclaw_dir="${HOME}/.openclaw"
     [ -d "$data_dir" ] || return 0
-    local subdirs="agents/main/agent extensions workspace skills hooks identity devices canvas cron"
+    local subdirs="agents/main/agent extensions plugin-runtime-deps workspace skills hooks identity devices canvas cron qmd tasks wiki"
     for sub in $subdirs; do
       mkdir -p "${data_dir}/${sub}" 2>/dev/null || true
     done

@@ -163,6 +163,28 @@ describe("nemoclaw-start gateway token export (#1114)", () => {
   });
 });
 
+describe("Dockerfile overlay follow-up", () => {
+  const dockerfile = fs.readFileSync(
+    path.join(import.meta.dirname, "..", "Dockerfile"),
+    "utf-8",
+  );
+  const overlayScript = fs.readFileSync(
+    path.join(import.meta.dirname, "..", "scripts", "apply-openclaw-overlay.py"),
+    "utf-8",
+  );
+
+  it("runs the final doctor pass after the overlay is applied", () => {
+    const overlayIdx = dockerfile.indexOf("RUN /usr/local/bin/apply-openclaw-overlay");
+    const finalDoctorIdx = dockerfile.lastIndexOf("openclaw doctor --fix");
+    expect(overlayIdx).toBeGreaterThan(-1);
+    expect(finalDoctorIdx).toBeGreaterThan(overlayIdx);
+  });
+
+  it("explicitly disables qqbot in the overlay config", () => {
+    expect(overlayScript).toContain('"qqbot": {"enabled": False}');
+  });
+});
+
 describe("nemoclaw-start configure guard (#1114)", () => {
   const src = fs.readFileSync(START_SCRIPT, "utf-8");
 

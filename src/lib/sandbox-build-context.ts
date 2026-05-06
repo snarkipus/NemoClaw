@@ -79,6 +79,10 @@ function stageOptimizedSandboxBuildContext(
     path.join(rootDir, "scripts", "nemoclaw-start.sh"),
     path.join(stagedScriptsDir, "nemoclaw-start.sh"),
   );
+  fs.copyFileSync(
+    path.join(rootDir, "scripts", "apply-openclaw-overlay.py"),
+    path.join(stagedScriptsDir, "apply-openclaw-overlay.py"),
+  );
   // Shared sandbox initialisation library sourced by the entrypoint (#2277)
   fs.mkdirSync(path.join(stagedScriptsDir, "lib"), { recursive: true });
   fs.copyFileSync(

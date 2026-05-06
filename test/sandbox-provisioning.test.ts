@@ -56,6 +56,52 @@ describe("sandbox provisioning: exec-approvals / update-check symlinks (#1027, #
   });
 });
 
+describe("sandbox provisioning: qmd/wiki/tasks symlinks", () => {
+  const baseSrc = fs.readFileSync(DOCKERFILE_BASE, "utf-8");
+  const mainSrc = fs.readFileSync(DOCKERFILE, "utf-8");
+
+  it("Dockerfile.base creates qmd/wiki/tasks backing directories in .openclaw-data", () => {
+    expect(baseSrc).toContain("/sandbox/.openclaw-data/qmd");
+    expect(baseSrc).toContain("/sandbox/.openclaw-data/tasks");
+    expect(baseSrc).toContain("/sandbox/.openclaw-data/wiki");
+  });
+
+  it("Dockerfile.base symlinks qmd/wiki/tasks into .openclaw", () => {
+    expect(baseSrc).toContain("ln -s /sandbox/.openclaw-data/qmd /sandbox/.openclaw/qmd");
+    expect(baseSrc).toContain("ln -s /sandbox/.openclaw-data/tasks /sandbox/.openclaw/tasks");
+    expect(baseSrc).toContain("ln -s /sandbox/.openclaw-data/wiki /sandbox/.openclaw/wiki");
+  });
+
+  it("Dockerfile keeps stale-base fallback scaffolding for qmd/wiki/tasks", () => {
+    expect(mainSrc).toContain("/sandbox/.openclaw-data/qmd");
+    expect(mainSrc).toContain("/sandbox/.openclaw-data/tasks");
+    expect(mainSrc).toContain("/sandbox/.openclaw-data/wiki");
+    expect(mainSrc).toMatch(
+      /for dir in logs credentials sandbox media plugin-runtime-deps qmd tasks wiki/,
+    );
+  });
+});
+
+describe("sandbox provisioning: plugin-runtime-deps symlink", () => {
+  const baseSrc = fs.readFileSync(DOCKERFILE_BASE, "utf-8");
+  const mainSrc = fs.readFileSync(DOCKERFILE, "utf-8");
+
+  it("Dockerfile.base creates the plugin-runtime-deps backing directory in .openclaw-data", () => {
+    expect(baseSrc).toContain("/sandbox/.openclaw-data/plugin-runtime-deps");
+  });
+
+  it("Dockerfile.base symlinks plugin-runtime-deps into .openclaw", () => {
+    expect(baseSrc).toContain(
+      "ln -s /sandbox/.openclaw-data/plugin-runtime-deps /sandbox/.openclaw/plugin-runtime-deps",
+    );
+  });
+
+  it("Dockerfile keeps stale-base fallback scaffolding for plugin-runtime-deps", () => {
+    expect(mainSrc).toContain("/sandbox/.openclaw-data/plugin-runtime-deps");
+    expect(mainSrc).toMatch(/for dir in logs credentials sandbox media plugin-runtime-deps qmd tasks wiki/);
+  });
+});
+
 describe("sandbox provisioning: procps debug tools (#2343)", () => {
   const baseSrc = fs.readFileSync(DOCKERFILE_BASE, "utf-8");
   const mainSrc = fs.readFileSync(DOCKERFILE, "utf-8");
@@ -69,6 +115,27 @@ describe("sandbox provisioning: procps debug tools (#2343)", () => {
     // if the base image predates the procps addition.
     expect(mainSrc).toMatch(/command -v ps/);
     expect(mainSrc).toMatch(/install.*procps/);
+  });
+});
+
+describe("sandbox provisioning: staged rebuild runtime tools", () => {
+  const src = fs.readFileSync(DOCKERFILE, "utf-8");
+
+  it("keeps pinned version args for gh, obsidian-headless, and qmd", () => {
+    expect(src).toContain("ARG GH_VERSION=2.91.0");
+    expect(src).toContain("ARG OBSIDIAN_HEADLESS_VERSION=0.0.8");
+    expect(src).toContain("ARG QMD_VERSION=2.1.0");
+  });
+
+  it("installs github cli in the staged Dockerfile path", () => {
+    expect(src).toContain("https://cli.github.com/packages stable main");
+    expect(src).toContain('apt-get install -y --no-install-recommends "gh=${GH_VERSION}"');
+  });
+
+  it("installs obsidian-headless and qmd after npm ci --omit=dev", () => {
+    expect(src).toMatch(/RUN npm ci --omit=dev\s+RUN npm install -g --no-audit --no-fund --no-progress/s);
+    expect(src).toContain('"obsidian-headless@${OBSIDIAN_HEADLESS_VERSION}"');
+    expect(src).toContain('"@tobilu/qmd@${QMD_VERSION}"');
   });
 });
 

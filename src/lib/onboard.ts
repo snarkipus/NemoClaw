@@ -3915,9 +3915,26 @@ async function createSandbox(
     messagingTokenDefs.push({
       name: `${sandboxName}-brave-search`,
       envKey: webSearch.BRAVE_API_KEY_ENV,
-      token: getCredential(webSearch.BRAVE_API_KEY_ENV),
+      token: getMessagingToken(webSearch.BRAVE_API_KEY_ENV),
     });
   }
+  messagingTokenDefs.push(
+    {
+      name: `${sandboxName}-xai-search`,
+      envKey: "XAI_API_KEY",
+      token: getMessagingToken("XAI_API_KEY"),
+    },
+    {
+      name: `${sandboxName}-firecrawl`,
+      envKey: "FIRECRAWL_API_KEY",
+      token: getMessagingToken("FIRECRAWL_API_KEY"),
+    },
+    {
+      name: `${sandboxName}-github`,
+      envKey: "GITHUB_TOKEN",
+      token: getMessagingToken("GITHUB_TOKEN"),
+    },
+  );
   const hasMessagingTokens = messagingTokenDefs.some(({ token }) => !!token);
 
   // Reconcile local registry state with the live OpenShell gateway state.

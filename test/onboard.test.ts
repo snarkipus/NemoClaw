@@ -1712,6 +1712,10 @@ runner.run = (command, opts = {}) => {
   commands.push({ command: _n(command), env: opts.env || null });
   return { status: 0 };
 };
+runner.runFile = (file, args = [], opts = {}) => {
+  commands.push({ command: _n([file, ...args]), env: opts.env || null });
+  return { status: 0 };
+};
 runner.runCapture = (command) => {
   if (_n(command).includes("inference") && _n(command).includes("get")) {
     return [
@@ -2029,6 +2033,10 @@ const registry = require(${registryPath});
 const commands = [];
 runner.run = (command, opts = {}) => {
   commands.push({ command: _n(command), env: opts.env || null });
+  return { status: 0 };
+};
+runner.runFile = (file, args = [], opts = {}) => {
+  commands.push({ command: _n([file, ...args]), env: opts.env || null });
   return { status: 0 };
 };
 runner.runCapture = (command) => {
@@ -2375,6 +2383,10 @@ runner.run = (command, opts = {}) => {
   commands.push({ command: _n(command), env: opts.env || null });
   return { status: 0 };
 };
+runner.runFile = (file, args = [], opts = {}) => {
+  commands.push({ command: _n([file, ...args]), env: opts.env || null });
+  return { status: 0 };
+};
 runner.runCapture = (command) => {
   if (_n(command).includes("inference") && _n(command).includes("get")) {
     return [
@@ -2510,9 +2522,14 @@ runner.run = (command, opts = {}) => {
   commands.push({ command: _n(command), env: opts.env || null });
   return { status: 0 };
 };
+runner.runFile = (file, args = [], opts = {}) => {
+  commands.push({ command: _n([file, ...args]), env: opts.env || null });
+  return { status: 0 };
+};
 runner.runCapture = (command) => {
   if (_n(command).includes("sandbox get my-assistant")) return "";
   if (_n(command).includes("sandbox list")) return "my-assistant Ready";
+  if (_n(command).includes("doctor exec") && _n(command).includes("jsonpath={.status.phase}")) return "Running";
   if (_n(command).includes("sandbox exec my-assistant curl -sf http://localhost:18789/")) return "ok";
   if (_n(command).includes("forward list")) return "my-assistant 127.0.0.1 18789 12345 running";
   return "";
@@ -2618,9 +2635,14 @@ runner.run = (command, opts = {}) => {
   commands.push({ command: _n(command), env: opts.env || null });
   return { status: 0 };
 };
+runner.runFile = (file, args = [], opts = {}) => {
+  commands.push({ command: _n([file, ...args]), env: opts.env || null });
+  return { status: 0 };
+};
 runner.runCapture = (command) => {
   if (_n(command).includes("sandbox get my-assistant")) return "";
   if (_n(command).includes("sandbox list")) return "my-assistant Ready";
+  if (_n(command).includes("doctor exec") && _n(command).includes("jsonpath={.status.phase}")) return "Running";
   if (_n(command).includes("sandbox exec my-assistant curl -sf http://localhost:18789/")) return "ok";
   if (_n(command).includes("forward list")) return "my-assistant 127.0.0.1 18789 12345 running";
   return "";
@@ -2804,7 +2826,7 @@ const { createSandbox } = require(${onboardPath});
   });
 
   it(
-    "creates providers for messaging tokens and attaches them to the sandbox",
+    "creates providers for attached credentials and attaches them to the sandbox",
     { timeout: 60_000 },
     async () => {
       const repoRoot = path.join(import.meta.dirname, "..");
@@ -2873,6 +2895,9 @@ const { createSandbox } = require(${onboardPath});
   process.env.SLACK_BOT_TOKEN = "xoxb-test-slack-token-value";
   process.env.SLACK_APP_TOKEN = "xapp-test-slack-app-token-value";
   process.env.TELEGRAM_BOT_TOKEN = "123456:ABC-test-telegram-token";
+  process.env.XAI_API_KEY = "xai-test-token-value";
+  process.env.FIRECRAWL_API_KEY = "fc-test-token-value";
+  process.env.GITHUB_TOKEN = "ghp_test_token_value";
   const sandboxName = await createSandbox(null, "gpt-5.4");
   console.log(JSON.stringify({ sandboxName, commands }));
 })().catch((error) => {
@@ -2925,7 +2950,25 @@ const { createSandbox } = require(${onboardPath});
       assert.ok(telegramProvider, "expected my-assistant-telegram-bridge provider create command");
       assert.match(telegramProvider.command, /--credential TELEGRAM_BOT_TOKEN/);
 
-      // Verify sandbox create includes --provider flags for all three
+      const xaiProvider = providerCommands.find((e: CommandEntry) =>
+        e.command.includes("my-assistant-xai-search"),
+      );
+      assert.ok(xaiProvider, "expected my-assistant-xai-search provider create command");
+      assert.match(xaiProvider.command, /--credential XAI_API_KEY/);
+
+      const firecrawlProvider = providerCommands.find((e: CommandEntry) =>
+        e.command.includes("my-assistant-firecrawl"),
+      );
+      assert.ok(firecrawlProvider, "expected my-assistant-firecrawl provider create command");
+      assert.match(firecrawlProvider.command, /--credential FIRECRAWL_API_KEY/);
+
+      const githubProvider = providerCommands.find((e: CommandEntry) =>
+        e.command.includes("my-assistant-github"),
+      );
+      assert.ok(githubProvider, "expected my-assistant-github provider create command");
+      assert.match(githubProvider.command, /--credential GITHUB_TOKEN/);
+
+      // Verify sandbox create includes --provider flags for all attached credentials
       const createCommand = payload.commands.find((e: CommandEntry) =>
         e.command.includes("sandbox create"),
       );
@@ -2933,6 +2976,9 @@ const { createSandbox } = require(${onboardPath});
       assert.match(createCommand.command, /--provider my-assistant-discord-bridge/);
       assert.match(createCommand.command, /--provider my-assistant-slack-bridge/);
       assert.match(createCommand.command, /--provider my-assistant-telegram-bridge/);
+      assert.match(createCommand.command, /--provider my-assistant-xai-search/);
+      assert.match(createCommand.command, /--provider my-assistant-firecrawl/);
+      assert.match(createCommand.command, /--provider my-assistant-github/);
 
       // Discord and Telegram tokens must NOT appear in the sandbox create command
       // (they flow exclusively through the openshell provider credential system).
@@ -2970,6 +3016,17 @@ const { createSandbox } = require(${onboardPath});
         undefined,
         "NVIDIA_API_KEY must not be in sandbox env",
       );
+      assert.equal(createCommand.env.XAI_API_KEY, undefined, "XAI_API_KEY must not be in sandbox env");
+      assert.equal(
+        createCommand.env.FIRECRAWL_API_KEY,
+        undefined,
+        "FIRECRAWL_API_KEY must not be in sandbox env",
+      );
+      assert.equal(
+        createCommand.env.GITHUB_TOKEN,
+        undefined,
+        "GITHUB_TOKEN must not be in sandbox env",
+      );
 
       // Belt-and-suspenders: raw token values must not appear anywhere in env
       const envString = JSON.stringify(createCommand.env);
@@ -2988,6 +3045,15 @@ const { createSandbox } = require(${onboardPath});
       assert.ok(
         !envString.includes("123456:ABC-test-telegram-token"),
         "Telegram token value must not leak into sandbox env",
+      );
+      assert.ok(!envString.includes("xai-test-token-value"), "XAI token value must not leak into sandbox env");
+      assert.ok(
+        !envString.includes("fc-test-token-value"),
+        "Firecrawl token value must not leak into sandbox env",
+      );
+      assert.ok(
+        !envString.includes("ghp_test_token_value"),
+        "GitHub token value must not leak into sandbox env",
       );
     },
   );
@@ -3092,6 +3158,10 @@ const registry = require(${registryPath});
 const commands = [];
 runner.run = (command, opts = {}) => {
   commands.push({ command: _n(command), env: opts.env || null });
+  return { status: 0 };
+};
+runner.runFile = (file, args = [], opts = {}) => {
+  commands.push({ command: _n([file, ...args]), env: opts.env || null });
   return { status: 0 };
 };
 runner.runCapture = (command) => {
@@ -4208,7 +4278,10 @@ console.log(JSON.stringify({ exists: providerExistsInGateway("nonexistent") }));
     assert.equal(payload.exists, false);
   });
 
-  it("continues once the sandbox is Ready even if the create stream never closes", async () => {
+  it(
+    "continues once the sandbox is Ready even if the create stream never closes",
+    { timeout: 60_000 },
+    async () => {
     const repoRoot = path.join(import.meta.dirname, "..");
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-onboard-create-ready-"));
     const fakeBin = path.join(tmpDir, "bin");
@@ -4248,6 +4321,7 @@ runner.runCapture = (command) => {
     sandboxListCalls += 1;
     return sandboxListCalls >= 2 ? "my-assistant Ready" : "my-assistant Pending";
   }
+  if (_n(command).includes("doctor exec") && _n(command).includes("jsonpath={.status.phase}")) return "Running";
   if (_n(command).includes("sandbox exec my-assistant curl -sf http://localhost:18789/")) return "ok";
   if (_n(command).includes("forward list")) return "my-assistant 127.0.0.1 18789 12345 running";
   return "";
@@ -4282,7 +4356,8 @@ childProcess.spawn = (...args) => {
   commands.push({ command: _n(args[1][1]), env: args[2]?.env || null, child });
   process.nextTick(() => {
     child.stdout.emit("data", Buffer.from("Created sandbox: my-assistant\n"));
-  });
+    },
+  );
   return child;
 };
 
@@ -4640,6 +4715,7 @@ runner.run = (command, opts = {}) => {
 runner.runCapture = (command) => {
   if (_n(command).includes("sandbox get my-assistant")) return "";
   if (_n(command).includes("sandbox list")) return "my-assistant Ready";
+  if (_n(command).includes("doctor exec") && _n(command).includes("jsonpath={.status.phase}")) return "Running";
   if (_n(command).includes("sandbox exec my-assistant curl -sf http://localhost:18789/")) return "ok";
   if (_n(command).includes("forward list")) return "my-assistant 127.0.0.1 18789 12345 running";
   return "";
@@ -4767,9 +4843,14 @@ runner.run = (command, opts = {}) => {
   commands.push({ command: _n(command), env: opts.env || null });
   return { status: 0 };
 };
+runner.runFile = (file, args = [], opts = {}) => {
+  commands.push({ command: _n([file, ...args]), env: opts.env || null });
+  return { status: 0 };
+};
 runner.runCapture = (command) => {
   if (_n(command).includes("sandbox get my-assistant")) return "";
   if (_n(command).includes("sandbox list")) return "my-assistant Ready";
+  if (_n(command).includes("doctor exec") && _n(command).includes("jsonpath={.status.phase}")) return "Running";
   if (_n(command).includes("sandbox exec my-assistant curl -sf http://localhost:18789/")) return "ok";
   if (_n(command).includes("forward list")) return "my-assistant 127.0.0.1 18789 12345 running";
   return "";
@@ -5307,7 +5388,10 @@ const { setupMessagingChannels, MESSAGING_CHANNELS } = require(${onboardPath});
     }
   });
 
-  it("uses the custom Dockerfile parent directory as build context when --from is given", async () => {
+  it(
+    "uses the custom Dockerfile parent directory as build context when --from is given",
+    { timeout: 60_000 },
+    async () => {
     const repoRoot = path.join(import.meta.dirname, "..");
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-onboard-from-dockerfile-"));
     const fakeBin = path.join(tmpDir, "bin");
@@ -5415,6 +5499,7 @@ const { createSandbox } = require(${onboardPath});
         PATH: `${fakeBin}:${process.env.PATH || ""}`,
         NEMOCLAW_NON_INTERACTIVE: "1",
       },
+      timeout: 15_000,
     });
 
     assert.equal(result.status, 0, result.stderr);
@@ -5432,7 +5517,8 @@ const { createSandbox } = require(${onboardPath});
       true,
       "extra.txt from custom build context should be staged",
     );
-  });
+    },
+  );
 
   it("exits with an error when the --from Dockerfile path does not exist", async () => {
     const repoRoot = path.join(import.meta.dirname, "..");
