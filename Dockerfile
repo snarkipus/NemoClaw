@@ -180,7 +180,7 @@ RUN set -eu; \
     # Plugins still load via auto-discovery from the extensions directory. \
     rcf_file="$(grep -RIlE --include='*.js' 'async function replaceConfigFile\(params\)' "$OC_DIST" | head -n 1)"; \
     test -n "$rcf_file" || { echo "ERROR: replaceConfigFile function not found in OpenClaw dist" >&2; exit 1; }; \
-    python3 -c "import sys; p=sys.argv[1]; f=open(p); src=f.read(); f.close(); old='\tawait writeConfigFile(params.nextConfig, {\n\t\t...writeOptions,\n\t\t...params.writeOptions\n\t});'; new='\ttry { await writeConfigFile(params.nextConfig, {\n\t\t...writeOptions,\n\t\t...params.writeOptions\n\t}); } catch(_rcfErr) { if (process.env.OPENSHELL_SANDBOX === \"1\" && _rcfErr.code === \"EACCES\") { console.error(\"[nemoclaw] Config is read-only in sandbox \\u2014 plugin metadata not persisted (plugins auto-load from extensions/)\"); } else { throw _rcfErr; } }'; assert old in src, 'writeConfigFile(params.nextConfig) pattern not found'; f=open(p,'w'); f.write(src.replace(old,new,1)); f.close()" "$rcf_file"; \
+    python3 -c "import re, sys; p=sys.argv[1]; f=open(p); src=f.read(); f.close(); pattern=r'\\bawait writeConfigFile\\(params\\.nextConfig, \\{\\n(?:\\t.*\\n)*?\\t\\}\\);'; match=re.search(pattern, src, re.M); assert match, 'writeConfigFile(params.nextConfig) pattern not found'; old=match.group(0); new='try { ' + old + ' } catch(_rcfErr) { if (process.env.OPENSHELL_SANDBOX === \"1\" && _rcfErr.code === \"EACCES\") { console.error(\"[nemoclaw] Config is read-only in sandbox \\u2014 plugin metadata not persisted (plugins auto-load from extensions/)\"); } else { throw _rcfErr; } }'; f=open(p,'w'); f.write(src.replace(old,new,1)); f.close()" "$rcf_file"; \
     grep -REq --include='*.js' 'OPENSHELL_SANDBOX.*EACCES' "$rcf_file" || { echo "ERROR: Patch 4 (replaceConfigFile EACCES) not applied" >&2; exit 1; }
 
 # Set up blueprint for local resolution.
@@ -189,10 +189,13 @@ RUN set -eu; \
 RUN mkdir -p /sandbox/.nemoclaw/blueprints/0.1.0 \
     && cp -r /opt/nemoclaw-blueprint/* /sandbox/.nemoclaw/blueprints/0.1.0/
 
-# Copy startup script and shared sandbox initialisation library
+# Copy startup script, overlay patch, and shared sandbox initialisation library
+COPY scripts/apply-openclaw-overlay.py /usr/local/bin/apply-openclaw-overlay
 COPY scripts/lib/sandbox-init.sh /usr/local/lib/nemoclaw/sandbox-init.sh
 COPY scripts/nemoclaw-start.sh /usr/local/bin/nemoclaw-start
-RUN chmod 755 /usr/local/bin/nemoclaw-start /usr/local/lib/nemoclaw/sandbox-init.sh
+RUN chmod 755 /usr/local/bin/apply-openclaw-overlay \
+    /usr/local/bin/nemoclaw-start \
+    /usr/local/lib/nemoclaw/sandbox-init.sh
 
 # Build args for config that varies per deployment.
 # nemoclaw onboard passes these at image build time.
@@ -364,6 +367,11 @@ os.chmod(path, 0o600)"
 RUN openclaw doctor --fix > /dev/null 2>&1 || true \
     && openclaw plugins install /opt/nemoclaw > /dev/null 2>&1 || true
 
+# Apply the final config overlay, then run doctor once more so bundled plugin
+# runtime deps are materialized against the final plugin/config shape.
+RUN /usr/local/bin/apply-openclaw-overlay \
+    && (openclaw doctor --fix > /dev/null 2>&1 || true)
+
 # SECURITY: Clear any gateway auth token that openclaw doctor/plugins may have
 # auto-generated. The real token is created at container startup by the
 # entrypoint (generate_gateway_token) and never stored in openclaw.json.
@@ -388,19 +396,28 @@ os.chmod(path, 0o600)"
 # hadolint ignore=DL3002
 USER root
 
-# Ensure .openclaw-data subdirs and symlinks exist for logs, credentials, and
-# sandbox. These are defined in Dockerfile.base but the GHCR base image may
+# Ensure .openclaw-data subdirs and symlinks exist for logs, credentials,
+# sandbox, plugin-runtime-deps, qmd, tasks, and wiki. These are defined in
+# Dockerfile.base but the GHCR base image may
 # not have been rebuilt yet. Idempotent — harmless once the base catches up.
 # Ref: https://github.com/NVIDIA/NemoClaw/issues/804
 RUN mkdir -p /sandbox/.openclaw-data/logs \
         /sandbox/.openclaw-data/credentials \
         /sandbox/.openclaw-data/sandbox \
         /sandbox/.openclaw-data/media \
+        /sandbox/.openclaw-data/plugin-runtime-deps \
+        /sandbox/.openclaw-data/qmd \
+        /sandbox/.openclaw-data/tasks \
+        /sandbox/.openclaw-data/wiki \
     && chown sandbox:sandbox /sandbox/.openclaw-data/logs \
         /sandbox/.openclaw-data/credentials \
         /sandbox/.openclaw-data/sandbox \
         /sandbox/.openclaw-data/media \
-    && for dir in logs credentials sandbox media; do \
+        /sandbox/.openclaw-data/plugin-runtime-deps \
+        /sandbox/.openclaw-data/qmd \
+        /sandbox/.openclaw-data/tasks \
+        /sandbox/.openclaw-data/wiki \
+    && for dir in logs credentials sandbox media plugin-runtime-deps qmd tasks wiki; do \
         if [ -L "/sandbox/.openclaw/$dir" ]; then true; \
         elif [ -e "/sandbox/.openclaw/$dir" ]; then \
             cp -a "/sandbox/.openclaw/$dir/." "/sandbox/.openclaw-data/$dir/" 2>/dev/null || true; \

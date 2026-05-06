@@ -2804,7 +2804,7 @@ const { createSandbox } = require(${onboardPath});
   });
 
   it(
-    "creates providers for messaging tokens and attaches them to the sandbox",
+    "creates providers for attached credentials and attaches them to the sandbox",
     { timeout: 60_000 },
     async () => {
       const repoRoot = path.join(import.meta.dirname, "..");
@@ -2873,6 +2873,9 @@ const { createSandbox } = require(${onboardPath});
   process.env.SLACK_BOT_TOKEN = "xoxb-test-slack-token-value";
   process.env.SLACK_APP_TOKEN = "xapp-test-slack-app-token-value";
   process.env.TELEGRAM_BOT_TOKEN = "123456:ABC-test-telegram-token";
+  process.env.XAI_API_KEY = "xai-test-token-value";
+  process.env.FIRECRAWL_API_KEY = "fc-test-token-value";
+  process.env.GITHUB_TOKEN = "ghp_test_token_value";
   const sandboxName = await createSandbox(null, "gpt-5.4");
   console.log(JSON.stringify({ sandboxName, commands }));
 })().catch((error) => {
@@ -2925,7 +2928,25 @@ const { createSandbox } = require(${onboardPath});
       assert.ok(telegramProvider, "expected my-assistant-telegram-bridge provider create command");
       assert.match(telegramProvider.command, /--credential TELEGRAM_BOT_TOKEN/);
 
-      // Verify sandbox create includes --provider flags for all three
+      const xaiProvider = providerCommands.find((e: CommandEntry) =>
+        e.command.includes("my-assistant-xai-search"),
+      );
+      assert.ok(xaiProvider, "expected my-assistant-xai-search provider create command");
+      assert.match(xaiProvider.command, /--credential XAI_API_KEY/);
+
+      const firecrawlProvider = providerCommands.find((e: CommandEntry) =>
+        e.command.includes("my-assistant-firecrawl"),
+      );
+      assert.ok(firecrawlProvider, "expected my-assistant-firecrawl provider create command");
+      assert.match(firecrawlProvider.command, /--credential FIRECRAWL_API_KEY/);
+
+      const githubProvider = providerCommands.find((e: CommandEntry) =>
+        e.command.includes("my-assistant-github"),
+      );
+      assert.ok(githubProvider, "expected my-assistant-github provider create command");
+      assert.match(githubProvider.command, /--credential GITHUB_TOKEN/);
+
+      // Verify sandbox create includes --provider flags for all attached credentials
       const createCommand = payload.commands.find((e: CommandEntry) =>
         e.command.includes("sandbox create"),
       );
@@ -2933,6 +2954,9 @@ const { createSandbox } = require(${onboardPath});
       assert.match(createCommand.command, /--provider my-assistant-discord-bridge/);
       assert.match(createCommand.command, /--provider my-assistant-slack-bridge/);
       assert.match(createCommand.command, /--provider my-assistant-telegram-bridge/);
+      assert.match(createCommand.command, /--provider my-assistant-xai-search/);
+      assert.match(createCommand.command, /--provider my-assistant-firecrawl/);
+      assert.match(createCommand.command, /--provider my-assistant-github/);
 
       // Discord and Telegram tokens must NOT appear in the sandbox create command
       // (they flow exclusively through the openshell provider credential system).
@@ -2970,6 +2994,17 @@ const { createSandbox } = require(${onboardPath});
         undefined,
         "NVIDIA_API_KEY must not be in sandbox env",
       );
+      assert.equal(createCommand.env.XAI_API_KEY, undefined, "XAI_API_KEY must not be in sandbox env");
+      assert.equal(
+        createCommand.env.FIRECRAWL_API_KEY,
+        undefined,
+        "FIRECRAWL_API_KEY must not be in sandbox env",
+      );
+      assert.equal(
+        createCommand.env.GITHUB_TOKEN,
+        undefined,
+        "GITHUB_TOKEN must not be in sandbox env",
+      );
 
       // Belt-and-suspenders: raw token values must not appear anywhere in env
       const envString = JSON.stringify(createCommand.env);
@@ -2988,6 +3023,15 @@ const { createSandbox } = require(${onboardPath});
       assert.ok(
         !envString.includes("123456:ABC-test-telegram-token"),
         "Telegram token value must not leak into sandbox env",
+      );
+      assert.ok(!envString.includes("xai-test-token-value"), "XAI token value must not leak into sandbox env");
+      assert.ok(
+        !envString.includes("fc-test-token-value"),
+        "Firecrawl token value must not leak into sandbox env",
+      );
+      assert.ok(
+        !envString.includes("ghp_test_token_value"),
+        "GitHub token value must not leak into sandbox env",
       );
     },
   );

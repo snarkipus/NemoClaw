@@ -195,6 +195,13 @@ describe("Dockerfile gateway token externalization", () => {
     expect(clearIdx).toBeGreaterThan(doctorIdx);
   });
 
+  it("runs the final doctor pass after the overlay is applied", () => {
+    const overlayIdx = dockerfile.indexOf("RUN /usr/local/bin/apply-openclaw-overlay");
+    const finalDoctorIdx = dockerfile.lastIndexOf("openclaw doctor --fix");
+    expect(overlayIdx).toBeGreaterThan(-1);
+    expect(finalDoctorIdx).toBeGreaterThan(overlayIdx);
+  });
+
   it("pins config hash after token is cleared", () => {
     const clearIdx = dockerfile.indexOf("['token'] = ''");
     const hashIdx = dockerfile.indexOf("sha256sum /sandbox/.openclaw/openclaw.json");

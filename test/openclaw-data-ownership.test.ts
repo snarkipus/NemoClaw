@@ -165,6 +165,7 @@ describe("fix_openclaw_data_ownership", () => {
     for (const sub of [
       "agents/main/agent",
       "extensions",
+      "plugin-runtime-deps",
       "workspace",
       "skills",
       "hooks",

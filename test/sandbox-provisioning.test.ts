@@ -56,6 +56,52 @@ describe("sandbox provisioning: exec-approvals / update-check symlinks (#1027, #
   });
 });
 
+describe("sandbox provisioning: qmd/wiki/tasks symlinks", () => {
+  const baseSrc = fs.readFileSync(DOCKERFILE_BASE, "utf-8");
+  const mainSrc = fs.readFileSync(DOCKERFILE, "utf-8");
+
+  it("Dockerfile.base creates qmd/wiki/tasks backing directories in .openclaw-data", () => {
+    expect(baseSrc).toContain("/sandbox/.openclaw-data/qmd");
+    expect(baseSrc).toContain("/sandbox/.openclaw-data/tasks");
+    expect(baseSrc).toContain("/sandbox/.openclaw-data/wiki");
+  });
+
+  it("Dockerfile.base symlinks qmd/wiki/tasks into .openclaw", () => {
+    expect(baseSrc).toContain("ln -s /sandbox/.openclaw-data/qmd /sandbox/.openclaw/qmd");
+    expect(baseSrc).toContain("ln -s /sandbox/.openclaw-data/tasks /sandbox/.openclaw/tasks");
+    expect(baseSrc).toContain("ln -s /sandbox/.openclaw-data/wiki /sandbox/.openclaw/wiki");
+  });
+
+  it("Dockerfile keeps stale-base fallback scaffolding for qmd/wiki/tasks", () => {
+    expect(mainSrc).toContain("/sandbox/.openclaw-data/qmd");
+    expect(mainSrc).toContain("/sandbox/.openclaw-data/tasks");
+    expect(mainSrc).toContain("/sandbox/.openclaw-data/wiki");
+    expect(mainSrc).toMatch(
+      /for dir in logs credentials sandbox media plugin-runtime-deps qmd tasks wiki/,
+    );
+  });
+});
+
+describe("sandbox provisioning: plugin-runtime-deps symlink", () => {
+  const baseSrc = fs.readFileSync(DOCKERFILE_BASE, "utf-8");
+  const mainSrc = fs.readFileSync(DOCKERFILE, "utf-8");
+
+  it("Dockerfile.base creates the plugin-runtime-deps backing directory in .openclaw-data", () => {
+    expect(baseSrc).toContain("/sandbox/.openclaw-data/plugin-runtime-deps");
+  });
+
+  it("Dockerfile.base symlinks plugin-runtime-deps into .openclaw", () => {
+    expect(baseSrc).toContain(
+      "ln -s /sandbox/.openclaw-data/plugin-runtime-deps /sandbox/.openclaw/plugin-runtime-deps",
+    );
+  });
+
+  it("Dockerfile keeps stale-base fallback scaffolding for plugin-runtime-deps", () => {
+    expect(mainSrc).toContain("/sandbox/.openclaw-data/plugin-runtime-deps");
+    expect(mainSrc).toMatch(/for dir in logs credentials sandbox media plugin-runtime-deps qmd tasks wiki/);
+  });
+});
+
 describe("sandbox provisioning: procps debug tools (#2343)", () => {
   const baseSrc = fs.readFileSync(DOCKERFILE_BASE, "utf-8");
   const mainSrc = fs.readFileSync(DOCKERFILE, "utf-8");
