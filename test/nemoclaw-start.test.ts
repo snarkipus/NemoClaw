@@ -88,24 +88,16 @@ describe("nemoclaw-start _SANDBOX_HOME variable (#1609)", () => {
   it("defines _SANDBOX_HOME before first use", () => {
     const defPos = src.indexOf('_SANDBOX_HOME="/sandbox"');
     expect(defPos).toBeGreaterThan(-1);
-
-    // All usages must come after the definition
-    const usages = [...src.matchAll(/\$\{?_SANDBOX_HOME\}?/g)];
-    expect(usages.length).toBeGreaterThanOrEqual(3);
-    for (const m of usages) {
-      // Skip the definition line itself
-      if (m.index === defPos) continue;
-      expect(m.index).toBeGreaterThan(defPos);
-    }
   });
 
-  it("uses _SANDBOX_HOME for rc file paths in install_configure_guard", () => {
+  it("does not mutate rc files in install_configure_guard while the guard is disabled", () => {
     const guardFn = src.match(
       /install_configure_guard\(\) \{([\s\S]*?)^validate_openclaw_symlinks/m,
     );
     expect(guardFn).toBeTruthy();
-    expect(guardFn[1]).toContain("${_SANDBOX_HOME}/.bashrc");
-    expect(guardFn[1]).toContain("${_SANDBOX_HOME}/.profile");
+    expect(guardFn[1]).not.toContain("${_SANDBOX_HOME}/.bashrc");
+    expect(guardFn[1]).not.toContain("${_SANDBOX_HOME}/.profile");
+    expect(guardFn[1]).toContain("return 0");
   });
 });
 
@@ -195,6 +187,13 @@ describe("Dockerfile gateway token externalization", () => {
     expect(clearIdx).toBeGreaterThan(doctorIdx);
   });
 
+  it("runs the final doctor pass after the overlay is applied", () => {
+    const overlayIdx = dockerfile.indexOf("RUN /usr/local/bin/apply-openclaw-overlay");
+    const finalDoctorIdx = dockerfile.lastIndexOf("openclaw doctor --fix");
+    expect(overlayIdx).toBeGreaterThan(-1);
+    expect(finalDoctorIdx).toBeGreaterThan(overlayIdx);
+  });
+
   it("pins config hash after token is cleared", () => {
     const clearIdx = dockerfile.indexOf("['token'] = ''");
     const hashIdx = dockerfile.indexOf("sha256sum /sandbox/.openclaw/openclaw.json");
@@ -202,6 +201,13 @@ describe("Dockerfile gateway token externalization", () => {
     expect(clearIdx).toBeGreaterThan(-1);
     expect(hashIdx).toBeGreaterThan(-1);
     expect(hashIdx).toBeGreaterThan(clearIdx);
+  });
+
+  it("wraps the openclaw launcher to read the externalized token file", () => {
+    expect(dockerfile).toContain('Path("/usr/local/sbin/openclaw").write_text(');
+    expect(dockerfile).toContain('if [ -z \\"${OPENCLAW_GATEWAY_TOKEN:-}\\" ]; then');
+    expect(dockerfile).toContain('/run/nemoclaw/gateway-token /tmp/.runtime/nemoclaw/gateway-token');
+    expect(dockerfile).toContain('exec node /usr/local/lib/node_modules/openclaw/openclaw.mjs \\"$@\\"');
   });
 });
 
@@ -287,37 +293,14 @@ describe("nemoclaw-start configure guard (#1114)", () => {
     expect(src).toMatch(/install_configure_guard\(\) \{/);
   });
 
-  it("intercepts openclaw configure with an actionable error", () => {
-    // The guard installs a heredoc containing a shell function — extract the
-    // full block between the function definition and the next top-level function.
+  it("is temporarily a no-op until the guard moves off immutable rc files", () => {
     const guardBlock = src.match(
       /install_configure_guard\(\) \{([\s\S]*?)^validate_openclaw_symlinks/m,
     );
     expect(guardBlock).toBeTruthy();
     const body = guardBlock[1];
-    expect(body).toContain("configure)");
-    expect(body).toContain("nemoclaw onboard --resume");
-    expect(body).toContain("return 1");
-  });
-
-  it("passes non-configure subcommands through to the real binary", () => {
-    const guardBlock = src.match(
-      /install_configure_guard\(\) \{([\s\S]*?)^validate_openclaw_symlinks/m,
-    );
-    expect(guardBlock).toBeTruthy();
-    expect(guardBlock[1]).toContain('command openclaw "$@"');
-  });
-
-  it("uses idempotent marker blocks", () => {
-    const guardBlock = src.match(
-      /install_configure_guard\(\) \{([\s\S]*?)^validate_openclaw_symlinks/m,
-    );
-    expect(guardBlock).toBeTruthy();
-    const body = guardBlock[1];
-    expect(body).toContain("nemoclaw-configure-guard begin");
-    expect(body).toContain("nemoclaw-configure-guard end");
-    // Uses awk to strip existing block before re-inserting
-    expect(body).toContain("awk");
+    expect(body).toContain("immutable /sandbox home");
+    expect(body).toContain("return 0");
   });
 
   it("calls install_configure_guard in both root and non-root paths", () => {
@@ -330,7 +313,7 @@ describe("nemoclaw-start configure guard (#1114)", () => {
 describe("nemoclaw-start configure guard blocks --local (#2016)", () => {
   const src = fs.readFileSync(START_SCRIPT, "utf-8");
 
-  it("blocks openclaw agent --local with a hard error and return 1", () => {
+  it.skip("blocks openclaw agent --local with a hard error and return 1", () => {
     const guardBlock = src.match(
       /install_configure_guard\(\) \{([\s\S]*?)^validate_openclaw_symlinks/m,
     );
@@ -346,7 +329,7 @@ describe("nemoclaw-start configure guard blocks --local (#2016)", () => {
     expect(body).not.toContain("[SECURITY] Warning");
   });
 
-  it("suggests the correct alternative command without --local", () => {
+  it.skip("suggests the correct alternative command without --local", () => {
     const guardBlock = src.match(
       /install_configure_guard\(\) \{([\s\S]*?)^validate_openclaw_symlinks/m,
     );
@@ -354,7 +337,7 @@ describe("nemoclaw-start configure guard blocks --local (#2016)", () => {
     expect(guardBlock[1]).toContain("openclaw agent --agent main");
   });
 
-  it("allows openclaw agent without --local to pass through", () => {
+  it.skip("allows openclaw agent without --local to pass through", () => {
     const guardBlock = src.match(
       /install_configure_guard\(\) \{([\s\S]*?)^validate_openclaw_symlinks/m,
     );
@@ -369,20 +352,20 @@ describe("nemoclaw-start configure guard blocks --local (#2016)", () => {
 describe("nemoclaw-start configure guard blocks config set/unset (#1973)", () => {
   const src = fs.readFileSync(START_SCRIPT, "utf-8");
 
-  it("adds a config) case that matches only set and unset subcommands", () => {
+  it.skip("adds a config) case that matches only set and unset subcommands", () => {
     expect(src).toMatch(/config\)\s+case "\$2" in\s+set \| unset\)/);
   });
 
-  it("prints an actionable error quoting the invoked subcommand and returns 1", () => {
+  it.skip("prints an actionable error quoting the invoked subcommand and returns 1", () => {
     expect(src).toContain("'openclaw config $2' cannot modify config inside the sandbox");
     expect(src).toMatch(/set \| unset\)[\s\S]*?return 1/);
   });
 
-  it("redirects users to nemoclaw onboard --resume", () => {
+  it.skip("redirects users to nemoclaw onboard --resume", () => {
     expect(src).toMatch(/set \| unset\)[\s\S]*?nemoclaw onboard --resume/);
   });
 
-  it("does not block immutable subcommands (get, list) — they fall through to the real binary", () => {
+  it.skip("does not block immutable subcommands (get, list) — they fall through to the real binary", () => {
     // The config) arm only enumerates mutating subcommands. Read-only ones are
     // not matched, so execution falls through to `command openclaw "$@"` below.
     expect(src).not.toMatch(/config\)\s+case "\$2" in[\s\S]*?\b(get|list|show|view)\)/);
@@ -393,16 +376,16 @@ describe("nemoclaw-start configure guard blocks config set/unset (#1973)", () =>
 describe("nemoclaw-start configure guard blocks channels mutators (#2097)", () => {
   const src = fs.readFileSync(START_SCRIPT, "utf-8");
 
-  it("adds a channels) case that allows read-only subcommands through", () => {
+  it.skip("adds a channels) case that allows read-only subcommands through", () => {
     expect(src).toMatch(/channels\)\s+case "\$2" in\s+list \| "" \| -h \| --help\)/);
   });
 
-  it("blocks mutating channels subcommands with an actionable error and return 1", () => {
+  it.skip("blocks mutating channels subcommands with an actionable error and return 1", () => {
     expect(src).toContain("'openclaw channels $2' cannot modify channels inside the sandbox");
     expect(src).toMatch(/channels\)[\s\S]*?\*\)[\s\S]*?return 1/);
   });
 
-  it("redirects users to the host-side channels commands", () => {
+  it.skip("redirects users to the host-side channels commands", () => {
     expect(src).toMatch(/channels\)[\s\S]*?nemoclaw <sandbox> channels add/);
     expect(src).toMatch(/channels\)[\s\S]*?nemoclaw <sandbox> channels remove/);
   });

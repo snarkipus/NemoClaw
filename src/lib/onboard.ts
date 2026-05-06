@@ -955,13 +955,13 @@ function upsertProvider(
 }
 
 /**
- * Upsert all messaging providers that have tokens configured.
+ * Upsert all sandbox-attached credential providers that have values configured.
  * Returns the list of provider names that were successfully created/updated.
  * Exits the process if any upsert fails.
  * @param {Array<{name: string, envKey: string, token: string|null}>} tokenDefs
  * @returns {string[]} Provider names that were upserted.
  */
-type MessagingTokenDef = { name: string; envKey: string; token: string | null };
+type CredentialProviderDef = { name: string; envKey: string; token: string | null };
 
 type EndpointValidationResult =
   | { ok: true; api: string; retry?: undefined }
@@ -976,13 +976,13 @@ type SelectionDrift = {
   unknown: boolean;
 };
 
-function upsertMessagingProviders(tokenDefs: MessagingTokenDef[]): string[] {
+function upsertAttachedCredentialProviders(tokenDefs: CredentialProviderDef[]): string[] {
   const providers = [];
   for (const { name, envKey, token } of tokenDefs) {
     if (!token) continue;
     const result = upsertProvider(name, "generic", envKey, null, { [envKey]: token });
     if (!result.ok) {
-      console.error(`\n  ✗ Failed to create messaging provider '${name}': ${result.message}`);
+      console.error(`\n  ✗ Failed to create attached credential provider '${name}': ${result.message}`);
       process.exit(1);
     }
     providers.push(name);
@@ -1020,7 +1020,7 @@ function hashCredential(value: string | null | undefined): string | null {
 }
 
 /**
- * Detect whether any messaging provider credential has been rotated since
+ * Detect whether any attached provider credential has been rotated since
  * the sandbox was created, by comparing SHA-256 hashes of the current
  * token values against hashes stored in the sandbox registry.
  *
@@ -1031,9 +1031,9 @@ function hashCredential(value: string | null | undefined): string | null {
  * @param {Array<{name: string, envKey: string, token: string|null}>} tokenDefs
  * @returns {{ changed: boolean, changedProviders: string[] }}
  */
-function detectMessagingCredentialRotation(
+function detectCredentialProviderRotation(
   sandboxName: string,
-  tokenDefs: MessagingTokenDef[],
+  tokenDefs: CredentialProviderDef[],
 ): { changed: boolean; changedProviders: string[] } {
   const sb = registry.getSandbox(sandboxName);
   const storedHashes = sb?.providerCredentialHashes || {};
@@ -3819,10 +3819,10 @@ async function createSandbox(
   const effectivePort = agent ? agent.forwardPort : CONTROL_UI_PORT;
   const chatUiUrl = process.env.CHAT_UI_URL || `http://127.0.0.1:${effectivePort}`;
 
-  // Check whether messaging providers will be needed — this must happen before
+  // Check whether attached credential providers will be needed — this must happen before
   // the sandbox reuse decision so we can detect stale sandboxes that were created
   // without provider attachments (security: prevents legacy raw-env-var leaks).
-  const getMessagingToken = (envKey: string): string | null =>
+  const getCredentialToken = (envKey: string): string | null =>
     getCredential(envKey) || normalizeCredentialValue(process.env[envKey]) || null;
 
   // The UI toggle list can include channels the user toggled on but then
@@ -3832,7 +3832,7 @@ async function createSandbox(
   const conflictCheckChannels: string[] = Array.isArray(enabledChannels)
     ? enabledChannels.filter((name) => {
         const def = MESSAGING_CHANNELS.find((c) => c.name === name);
-        return def ? !!getMessagingToken(def.envKey) : false;
+        return def ? !!getCredentialToken(def.envKey) : false;
       })
     : [];
 
@@ -3891,35 +3891,53 @@ async function createSandbox(
     {
       name: `${sandboxName}-discord-bridge`,
       envKey: "DISCORD_BOT_TOKEN",
-      token: getMessagingToken("DISCORD_BOT_TOKEN"),
+      token: getCredentialToken("DISCORD_BOT_TOKEN"),
     },
     {
       name: `${sandboxName}-slack-bridge`,
       envKey: "SLACK_BOT_TOKEN",
-      token: getMessagingToken("SLACK_BOT_TOKEN"),
+      token: getCredentialToken("SLACK_BOT_TOKEN"),
     },
     {
       name: `${sandboxName}-slack-app`,
       envKey: "SLACK_APP_TOKEN",
-      token: getMessagingToken("SLACK_APP_TOKEN"),
+      token: getCredentialToken("SLACK_APP_TOKEN"),
     },
     {
       name: `${sandboxName}-telegram-bridge`,
       envKey: "TELEGRAM_BOT_TOKEN",
-      token: getMessagingToken("TELEGRAM_BOT_TOKEN"),
+      token: getCredentialToken("TELEGRAM_BOT_TOKEN"),
     },
   ]
     .filter(({ envKey }) => !enabledEnvKeys || enabledEnvKeys.has(envKey))
     .filter(({ envKey }) => !disabledEnvKeys.has(envKey));
 
+  const attachedCredentialDefs: CredentialProviderDef[] = [...messagingTokenDefs];
   if (webSearchConfig) {
-    messagingTokenDefs.push({
+    attachedCredentialDefs.push({
       name: `${sandboxName}-brave-search`,
       envKey: webSearch.BRAVE_API_KEY_ENV,
-      token: getCredential(webSearch.BRAVE_API_KEY_ENV),
+      token: getCredentialToken(webSearch.BRAVE_API_KEY_ENV),
     });
   }
-  const hasMessagingTokens = messagingTokenDefs.some(({ token }) => !!token);
+  attachedCredentialDefs.push(
+    {
+      name: `${sandboxName}-xai-search`,
+      envKey: "XAI_API_KEY",
+      token: getCredentialToken("XAI_API_KEY"),
+    },
+    {
+      name: `${sandboxName}-firecrawl`,
+      envKey: "FIRECRAWL_API_KEY",
+      token: getCredentialToken("FIRECRAWL_API_KEY"),
+    },
+    {
+      name: `${sandboxName}-github`,
+      envKey: "GITHUB_TOKEN",
+      token: getCredentialToken("GITHUB_TOKEN"),
+    },
+  );
+  const hasAttachedCredentials = attachedCredentialDefs.some(({ token }) => !!token);
 
   // Reconcile local registry state with the live OpenShell gateway state.
   const liveExists = pruneStaleSandboxEntry(sandboxName);
@@ -3931,20 +3949,20 @@ async function createSandbox(
   if (liveExists) {
     const existingSandboxState = getSandboxReuseState(sandboxName);
 
-    // Check whether messaging providers are missing from the gateway. Only
+    // Check whether attached credential providers are missing from the gateway. Only
     // force recreation when at least one required provider doesn't exist yet —
     // this avoids destroying sandboxes already created with provider attachments.
     const needsProviderMigration =
-      hasMessagingTokens &&
-      messagingTokenDefs.some(({ name, token }) => token && !providerExistsInGateway(name));
+      hasAttachedCredentials &&
+      attachedCredentialDefs.some(({ name, token }) => token && !providerExistsInGateway(name));
     const selectionDrift = getSelectionDrift(sandboxName, provider, model);
     const confirmedSelectionDrift = selectionDrift.changed && !selectionDrift.unknown;
 
-    // Detect whether any messaging credential has been rotated since the
+    // Detect whether any attached credential has been rotated since the
     // sandbox was created. Provider credentials are resolved once at sandbox
     // startup, so a rotated token requires a rebuild to take effect.
-    const credentialRotation = hasMessagingTokens
-      ? detectMessagingCredentialRotation(sandboxName, messagingTokenDefs)
+    const credentialRotation = hasAttachedCredentials
+      ? detectCredentialProviderRotation(sandboxName, attachedCredentialDefs)
       : { changed: false, changedProviders: [] };
 
     if (!isRecreateSandbox() && !needsProviderMigration && !credentialRotation.changed) {
@@ -3953,9 +3971,9 @@ async function createSandbox(
           if (confirmedSelectionDrift) {
             note("  [non-interactive] Recreating sandbox due to provider/model drift.");
           } else {
-            // Upsert messaging providers even on reuse so credential changes take
+            // Upsert attached providers even on reuse so credential changes take
             // effect without requiring a full sandbox recreation.
-            upsertMessagingProviders(messagingTokenDefs);
+            upsertAttachedCredentialProviders(attachedCredentialDefs);
             if (selectionDrift.unknown) {
               note(
                 "  [non-interactive] Existing provider/model selection is unreadable; reusing sandbox.",
@@ -3997,7 +4015,7 @@ async function createSandbox(
           const answer = await promptOrDefault("  Reuse existing sandbox? [Y/n]: ", null, "y");
           const normalizedAnswer = answer.trim().toLowerCase();
           if (normalizedAnswer !== "n" && normalizedAnswer !== "no") {
-            upsertMessagingProviders(messagingTokenDefs);
+            upsertAttachedCredentialProviders(attachedCredentialDefs);
             ensureDashboardForward(sandboxName, chatUiUrl);
             return sandboxName;
           }
@@ -4022,7 +4040,7 @@ async function createSandbox(
     // by credential rotation, so files can be restored after recreation.
     if (credentialRotation.changed && existingSandboxState === "ready") {
       const rotatedNames = credentialRotation.changedProviders.join(", ");
-      console.log(`  Messaging credential(s) rotated: ${rotatedNames}`);
+      console.log(`  Attached credential(s) rotated: ${rotatedNames}`);
       console.log("  Rebuilding sandbox to propagate new credentials to the L7 proxy...");
       try {
         const backup = sandboxState.backupSandboxState(sandboxName);
@@ -4032,10 +4050,10 @@ async function createSandbox(
         } else {
           console.error("  State backup failed — aborting rebuild to prevent data loss.");
           console.error("  Pass --recreate-sandbox to force recreation without backup.");
-          upsertMessagingProviders(messagingTokenDefs);
+          upsertAttachedCredentialProviders(attachedCredentialDefs);
           // Update stored hashes so the next onboard doesn't re-detect rotation.
           const abortHashes: Record<string, string> = {};
-          for (const { envKey, token } of messagingTokenDefs) {
+          for (const { envKey, token } of attachedCredentialDefs) {
             const hash = token ? hashCredential(token) : null;
             if (hash) abortHashes[envKey] = hash;
           }
@@ -4049,9 +4067,9 @@ async function createSandbox(
         const errorMessage = err instanceof Error ? err.message : String(err);
         console.error(`  State backup threw: ${errorMessage} — aborting rebuild.`);
         console.error("  Pass --recreate-sandbox to force recreation without backup.");
-        upsertMessagingProviders(messagingTokenDefs);
+        upsertAttachedCredentialProviders(attachedCredentialDefs);
         const abortHashes: Record<string, string> = {};
-        for (const { envKey, token } of messagingTokenDefs) {
+        for (const { envKey, token } of attachedCredentialDefs) {
           const hash = token ? hashCredential(token) : null;
           if (hash) abortHashes[envKey] = hash;
         }
@@ -4064,7 +4082,7 @@ async function createSandbox(
     }
 
     if (needsProviderMigration) {
-      console.log(`  Sandbox '${sandboxName}' exists but messaging providers are not attached.`);
+      console.log(`  Sandbox '${sandboxName}' exists but attached credential providers are missing.`);
       console.log("  Recreating to ensure credentials flow through the provider pipeline.");
     } else if (confirmedSelectionDrift) {
       note(`  Sandbox '${sandboxName}' exists — recreating to apply model/provider change.`);
@@ -4199,12 +4217,12 @@ async function createSandbox(
   ];
   // --gpu is intentionally omitted. See comment in startGateway().
 
-  // Create OpenShell providers for messaging credentials so they flow through
+  // Create OpenShell providers for attached credentials so they flow through
   // the provider/placeholder system instead of raw env vars. The L7 proxy
   // rewrites Authorization headers (Bearer/Bot) and URL-path segments
   // (/bot{TOKEN}/) with real secrets at egress (OpenShell ≥ 0.0.20).
-  const messagingProviders = upsertMessagingProviders(messagingTokenDefs);
-  for (const p of messagingProviders) {
+  const attachedProviders = upsertAttachedCredentialProviders(attachedCredentialDefs);
+  for (const p of attachedProviders) {
     createArgs.push("--provider", p);
   }
 
@@ -4217,7 +4235,7 @@ async function createSandbox(
     process.exit(1);
   }
   const tokensByEnvKey = Object.fromEntries(
-    messagingTokenDefs.map(({ envKey, token }) => [envKey, token]),
+    attachedCredentialDefs.map(({ envKey, token }) => [envKey, token]),
   );
   const activeMessagingChannels = [
     ...new Set(
@@ -4482,7 +4500,7 @@ async function createSandbox(
   // Register only after confirmed ready — prevents phantom entries
   const effectiveAgent = agent || agentDefs.loadAgent("openclaw");
   const providerCredentialHashes: Record<string, string> = {};
-  for (const { envKey, token } of messagingTokenDefs) {
+  for (const { envKey, token } of attachedCredentialDefs) {
     const hash = token ? hashCredential(token) : null;
     if (hash) {
       providerCredentialHashes[envKey] = hash;
@@ -4526,11 +4544,11 @@ async function createSandbox(
     ignoreError: true,
   });
 
-  // Check that messaging providers exist in the gateway (sandbox attachment
+  // Check that attached providers exist in the gateway (sandbox attachment
   // cannot be verified via CLI yet — only gateway-level existence is checked).
-  for (const p of messagingProviders) {
+  for (const p of attachedProviders) {
     if (!providerExistsInGateway(p)) {
-      console.error(`  ⚠ Messaging provider '${p}' was not found in the gateway.`);
+      console.error(`  ⚠ Attached provider '${p}' was not found in the gateway.`);
       console.error(`    The credential may not be available inside the sandbox.`);
       console.error(
         `    To fix: openshell provider create --name ${p} --type generic --credential <KEY>`,
@@ -7843,7 +7861,7 @@ module.exports = {
   hasResponsesToolCall,
   upsertProvider,
   hashCredential,
-  detectMessagingCredentialRotation,
+  detectCredentialProviderRotation,
   hydrateCredentialEnv,
   pruneKnownHostsEntries,
   shouldIncludeBuildContextPath,

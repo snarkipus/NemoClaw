@@ -69,6 +69,7 @@ _TOOL_REDIRECTS=(
   'npm_config_cache=/tmp/.npm-cache'
   'XDG_CACHE_HOME=/tmp/.cache'
   'XDG_CONFIG_HOME=/tmp/.config'
+  'GH_CONFIG_DIR=/tmp/.config/gh'
   'XDG_DATA_HOME=/tmp/.local/share'
   'XDG_STATE_HOME=/tmp/.local/state'
   'XDG_RUNTIME_DIR=/tmp/.runtime'
@@ -98,11 +99,13 @@ if [ "$(id -u)" -eq 0 ]; then
     /tmp/.npm-cache /tmp/.cache /tmp/.config /tmp/.local/share \
     /tmp/.local/state /tmp/.runtime /tmp/.claude \
     /tmp/npm-global
+  install -d -o sandbox -g sandbox -m 755 /tmp/.config/gh
   install -d -o sandbox -g sandbox -m 700 /tmp/.gnupg
 else
   mkdir -p /tmp/.npm-cache /tmp/.cache /tmp/.config /tmp/.local/share \
     /tmp/.local/state /tmp/.runtime /tmp/.claude \
     /tmp/npm-global
+  mkdir -p /tmp/.config/gh
   install -d -m 700 /tmp/.gnupg
 fi
 
@@ -645,95 +648,14 @@ _read_gateway_token() {
 }
 
 install_configure_guard() {
-  # Installs a shell function that intercepts `openclaw configure` inside the
-  # sandbox. The config is Landlock read-only — atomic writes to
-  # /sandbox/.openclaw/ fail with EACCES. Instead of a cryptic error, guide
-  # the user to the correct host-side workflow.
-  local marker_begin="# nemoclaw-configure-guard begin"
-  local marker_end="# nemoclaw-configure-guard end"
-  local snippet
-  read -r -d '' snippet <<'GUARD' || true
-# nemoclaw-configure-guard begin
-openclaw() {
-  case "$1" in
-    configure)
-      echo "Error: 'openclaw configure' cannot modify config inside the sandbox." >&2
-      echo "The sandbox config is read-only (Landlock enforced) for security." >&2
-      echo "" >&2
-      echo "To change your configuration, exit the sandbox and run:" >&2
-      echo "  nemoclaw onboard --resume" >&2
-      echo "" >&2
-      echo "This rebuilds the sandbox with your updated settings." >&2
-      return 1
-      ;;
-    config)
-      case "$2" in
-        set | unset)
-          echo "Error: 'openclaw config $2' cannot modify config inside the sandbox." >&2
-          echo "The sandbox config is read-only (Landlock enforced) for security." >&2
-          echo "" >&2
-          echo "To change your configuration, exit the sandbox and run:" >&2
-          echo "  nemoclaw onboard --resume" >&2
-          echo "" >&2
-          echo "This rebuilds the sandbox with your updated settings." >&2
-          return 1
-          ;;
-      esac
-      ;;
-    channels)
-      case "$2" in
-        list | "" | -h | --help) ;;
-        *)
-          echo "Error: 'openclaw channels $2' cannot modify channels inside the sandbox." >&2
-          echo "The sandbox config is read-only (Landlock enforced) for security." >&2
-          echo "" >&2
-          echo "To add or remove messaging channels, exit the sandbox and run:" >&2
-          echo "  nemoclaw <sandbox> channels add <telegram|discord|slack>" >&2
-          echo "  nemoclaw <sandbox> channels remove <telegram|discord|slack>" >&2
-          echo "" >&2
-          echo "These stage the change and rebuild the sandbox to apply it." >&2
-          return 1
-          ;;
-      esac
-      ;;
-    agent)
-      # Block --local inside sandbox — it bypasses gateway protections and can
-      # crash the container's main process, bricking the sandbox. Ref: #1632, #2016
-      local _arg
-      for _arg in "$@"; do
-        if [ "$_arg" = "--local" ]; then
-          echo "Error: 'openclaw agent --local' is not supported inside NemoClaw sandboxes." >&2
-          echo "The --local flag bypasses the gateway's security protections (secret scanning," >&2
-          echo "network policy, inference auth) and can crash the sandbox." >&2
-          echo "" >&2
-          echo "Instead, run without --local to use the gateway's managed inference route:" >&2
-          echo "  openclaw agent --agent main -m \"hello\"" >&2
-          return 1
-        fi
-      done
-      ;;
-  esac
-  command openclaw "$@"
-}
-# nemoclaw-configure-guard end
-GUARD
-
-  for rc_file in "${_SANDBOX_HOME}/.bashrc" "${_SANDBOX_HOME}/.profile"; do
-    if [ -f "$rc_file" ] && grep -qF "$marker_begin" "$rc_file" 2>/dev/null; then
-      local tmp
-      tmp="$(mktemp)"
-      awk -v b="$marker_begin" -v e="$marker_end" \
-        '$0==b{s=1;next} $0==e{s=0;next} !s' "$rc_file" >"$tmp"
-      printf '%s\n' "$snippet" >>"$tmp"
-      cat "$tmp" >"$rc_file"
-      rm -f "$tmp"
-    elif [ -w "$rc_file" ] || [ -w "$(dirname "$rc_file")" ]; then
-      printf '\n%s\n' "$snippet" >>"$rc_file"
-    fi
-  done
-  # Final lock after all rc-file mutations are complete so Landlock
-  # read_only enforcement holds.
-  lock_rc_files "$_SANDBOX_HOME"
+  # The historical implementation patched /sandbox/.bashrc and /sandbox/.profile
+  # at runtime to install a shell wrapper for openclaw configure/config/channels.
+  # In the current OpenShell sandbox command path, nemoclaw-start runs as the
+  # sandbox user inside an immutable /sandbox home, so rc-file mutation fails
+  # before the gateway can start. Leave this as a no-op until the guard is
+  # either baked into the image at build time or moved to a writable sourced
+  # fragment under /tmp.
+  return 0
 }
 
 # validate_openclaw_symlinks / harden_openclaw_symlinks — thin wrappers
@@ -1309,7 +1231,7 @@ if [ "$(id -u)" -ne 0 ]; then
     local data_dir="${HOME}/.openclaw-data"
     local openclaw_dir="${HOME}/.openclaw"
     [ -d "$data_dir" ] || return 0
-    local subdirs="agents/main/agent extensions workspace skills hooks identity devices canvas cron"
+    local subdirs="agents/main/agent extensions plugin-runtime-deps workspace skills hooks identity devices canvas cron"
     for sub in $subdirs; do
       mkdir -p "${data_dir}/${sub}" 2>/dev/null || true
     done

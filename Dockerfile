@@ -42,6 +42,23 @@ RUN apt-mark manual procps 2>/dev/null || true \
     fi \
     && ps --version
 
+ARG GH_VERSION=2.91.0
+ARG OBSIDIAN_HEADLESS_VERSION=0.0.8
+ARG QMD_VERSION=2.1.0
+
+# Onboard stages only Dockerfile, not Dockerfile.base. Install the runtime
+# tools required by the next-upgrade rebuild here so local staged builds do not
+# depend on a separately rebuilt sandbox-base image.
+RUN mkdir -p /etc/apt/keyrings \
+    && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+        -o /etc/apt/keyrings/githubcli-archive-keyring.gpg \
+    && chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg \
+    && printf '%s\n' 'deb [arch=amd64,arm64 signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main' \
+        > /etc/apt/sources.list.d/github-cli.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends "gh=${GH_VERSION}" \
+    && rm -rf /var/lib/apt/lists/*
+
 
 # Copy built plugin and blueprint into the sandbox
 COPY --from=builder /opt/nemoclaw/dist/ /opt/nemoclaw/dist/
@@ -52,6 +69,9 @@ COPY nemoclaw-blueprint/ /opt/nemoclaw-blueprint/
 # Install runtime dependencies only (no devDependencies, no build step)
 WORKDIR /opt/nemoclaw
 RUN npm ci --omit=dev
+RUN npm install -g --no-audit --no-fund --no-progress \
+    "obsidian-headless@${OBSIDIAN_HEADLESS_VERSION}" \
+    "@tobilu/qmd@${QMD_VERSION}"
 
 # Upgrade OpenClaw if the base image is stale.
 #
@@ -78,8 +98,33 @@ RUN set -eu; \
         # at the shell level first gives npm a clean slate and avoids the
         # rmdir failure inside npm's own install path.
         rm -rf /usr/local/lib/node_modules/openclaw /usr/local/bin/openclaw; \
-        npm install -g --no-audit --no-fund --no-progress "openclaw@${MIN_VER}"; \
+         npm install -g --no-audit --no-fund --no-progress "openclaw@${MIN_VER}"; \
     fi
+
+# Wrap the OpenClaw launcher so sandbox-local CLI commands can reuse the
+# externalized gateway token file even when they do not source shell rc files.
+# Place the shim in /usr/local/sbin so PATH resolves it before npm's stock
+# /usr/local/bin/openclaw symlink.
+RUN python3 - <<'PY'
+from pathlib import Path
+
+Path("/usr/local/sbin/openclaw").write_text(
+    "#!/usr/bin/env bash\n"
+    "set -euo pipefail\n"
+    "if [ -z \"${OPENCLAW_GATEWAY_TOKEN:-}\" ]; then\n"
+    "  for token_file in /run/nemoclaw/gateway-token /tmp/.runtime/nemoclaw/gateway-token; do\n"
+    "    if [ -r \"$token_file\" ]; then\n"
+    "      OPENCLAW_GATEWAY_TOKEN=\"$(cat \"$token_file\")\"\n"
+    "      export OPENCLAW_GATEWAY_TOKEN\n"
+    "      break\n"
+    "    fi\n"
+    "  done\n"
+    "fi\n"
+    "exec node /usr/local/lib/node_modules/openclaw/openclaw.mjs \"$@\"\n",
+    encoding="utf-8",
+)
+Path("/usr/local/sbin/openclaw").chmod(0o755)
+PY
 
 # Patch OpenClaw media fetch for proxy-only sandbox (NVIDIA/NemoClaw#1755).
 #
@@ -180,7 +225,7 @@ RUN set -eu; \
     # Plugins still load via auto-discovery from the extensions directory. \
     rcf_file="$(grep -RIlE --include='*.js' 'async function replaceConfigFile\(params\)' "$OC_DIST" | head -n 1)"; \
     test -n "$rcf_file" || { echo "ERROR: replaceConfigFile function not found in OpenClaw dist" >&2; exit 1; }; \
-    python3 -c "import sys; p=sys.argv[1]; f=open(p); src=f.read(); f.close(); old='\tawait writeConfigFile(params.nextConfig, {\n\t\t...writeOptions,\n\t\t...params.writeOptions\n\t});'; new='\ttry { await writeConfigFile(params.nextConfig, {\n\t\t...writeOptions,\n\t\t...params.writeOptions\n\t}); } catch(_rcfErr) { if (process.env.OPENSHELL_SANDBOX === \"1\" && _rcfErr.code === \"EACCES\") { console.error(\"[nemoclaw] Config is read-only in sandbox \\u2014 plugin metadata not persisted (plugins auto-load from extensions/)\"); } else { throw _rcfErr; } }'; assert old in src, 'writeConfigFile(params.nextConfig) pattern not found'; f=open(p,'w'); f.write(src.replace(old,new,1)); f.close()" "$rcf_file"; \
+    python3 -c "import re, sys; p=sys.argv[1]; f=open(p); src=f.read(); f.close(); pattern=r'\\bawait writeConfigFile\\(params\\.nextConfig, \\{\\n(?:\\t.*\\n)*?\\t\\}\\);'; match=re.search(pattern, src, re.M); assert match, 'writeConfigFile(params.nextConfig) pattern not found'; old=match.group(0); new='try { ' + old + ' } catch(_rcfErr) { if (process.env.OPENSHELL_SANDBOX === \"1\" && _rcfErr.code === \"EACCES\") { console.error(\"[nemoclaw] Config is read-only in sandbox \\u2014 plugin metadata not persisted (plugins auto-load from extensions/)\"); } else { throw _rcfErr; } }'; f=open(p,'w'); f.write(src.replace(old,new,1)); f.close()" "$rcf_file"; \
     grep -REq --include='*.js' 'OPENSHELL_SANDBOX.*EACCES' "$rcf_file" || { echo "ERROR: Patch 4 (replaceConfigFile EACCES) not applied" >&2; exit 1; }
 
 # Set up blueprint for local resolution.
@@ -190,9 +235,12 @@ RUN mkdir -p /sandbox/.nemoclaw/blueprints/0.1.0 \
     && cp -r /opt/nemoclaw-blueprint/* /sandbox/.nemoclaw/blueprints/0.1.0/
 
 # Copy startup script and shared sandbox initialisation library
+COPY scripts/apply-openclaw-overlay.py /usr/local/bin/apply-openclaw-overlay
 COPY scripts/lib/sandbox-init.sh /usr/local/lib/nemoclaw/sandbox-init.sh
 COPY scripts/nemoclaw-start.sh /usr/local/bin/nemoclaw-start
-RUN chmod 755 /usr/local/bin/nemoclaw-start /usr/local/lib/nemoclaw/sandbox-init.sh
+RUN chmod 755 /usr/local/bin/apply-openclaw-overlay \
+    /usr/local/bin/nemoclaw-start \
+    /usr/local/lib/nemoclaw/sandbox-init.sh
 
 # Build args for config that varies per deployment.
 # nemoclaw onboard passes these at image build time.
@@ -364,6 +412,15 @@ os.chmod(path, 0o600)"
 RUN openclaw doctor --fix > /dev/null 2>&1 || true \
     && openclaw plugins install /opt/nemoclaw > /dev/null 2>&1 || true
 
+# Apply the final patch config overlay with an additional doctor pass so
+# bundled plugin runtime deps can be materialized during the image build.
+# Emit build-log summaries before and after the final doctor pass so we can
+# inspect config/runtime shape drift without forcing an older config contract.
+RUN /usr/local/bin/apply-openclaw-overlay \
+    && python3 -c "exec('''import json, os, stat\nfrom pathlib import Path\n\ndef describe(path_str):\n    path = Path(path_str)\n    entry = {\"exists\": path.exists() or path.is_symlink()}\n    if entry[\"exists\"]:\n        st = path.lstat()\n        entry[\"kind\"] = \"symlink\" if stat.S_ISLNK(st.st_mode) else (\"directory\" if stat.S_ISDIR(st.st_mode) else \"file\")\n        entry[\"mode\"] = oct(stat.S_IMODE(st.st_mode))\n        if entry[\"kind\"] == \"symlink\":\n            entry[\"target\"] = os.readlink(path_str)\n    return entry\n\nconfig_path = os.path.expanduser(\"~/.openclaw/openclaw.json\")\ncfg = json.load(open(config_path))\nsummary = {\n    \"stage\": \"post-overlay-pre-final-doctor\",\n    \"primaryModel\": cfg.get(\"agents\", {}).get(\"defaults\", {}).get(\"model\", {}).get(\"primary\"),\n    \"providerKeys\": sorted(cfg.get(\"models\", {}).get(\"providers\", {}).keys()),\n    \"pluginKeys\": sorted(cfg.get(\"plugins\", {}).get(\"entries\", {}).keys()),\n    \"webSearchProvider\": cfg.get(\"tools\", {}).get(\"web\", {}).get(\"search\", {}).get(\"provider\"),\n    \"webFetchProvider\": cfg.get(\"tools\", {}).get(\"web\", {}).get(\"fetch\", {}).get(\"provider\"),\n    \"memoryBackend\": cfg.get(\"memory\", {}).get(\"backend\"),\n    \"gatewayTokenLength\": len(cfg.get(\"gateway\", {}).get(\"auth\", {}).get(\"token\", \"\")),\n    \"paths\": {\n        \"/sandbox/.openclaw/plugin-runtime-deps\": describe(\"/sandbox/.openclaw/plugin-runtime-deps\"),\n        \"/sandbox/.openclaw-data/plugin-runtime-deps\": describe(\"/sandbox/.openclaw-data/plugin-runtime-deps\"),\n    },\n}\nprint(\"[nemoclaw-build-debug] \" + json.dumps(summary, sort_keys=True))''')" \
+    && (openclaw doctor --fix > /dev/null 2>&1 || true) \
+    && python3 -c "exec('''import json, os, stat\nfrom pathlib import Path\n\ndef describe(path_str):\n    path = Path(path_str)\n    entry = {\"exists\": path.exists() or path.is_symlink()}\n    if entry[\"exists\"]:\n        st = path.lstat()\n        entry[\"kind\"] = \"symlink\" if stat.S_ISLNK(st.st_mode) else (\"directory\" if stat.S_ISDIR(st.st_mode) else \"file\")\n        entry[\"mode\"] = oct(stat.S_IMODE(st.st_mode))\n        if entry[\"kind\"] == \"symlink\":\n            entry[\"target\"] = os.readlink(path_str)\n    return entry\n\nconfig_path = os.path.expanduser(\"~/.openclaw/openclaw.json\")\ncfg = json.load(open(config_path))\nsummary = {\n    \"stage\": \"post-final-doctor\",\n    \"primaryModel\": cfg.get(\"agents\", {}).get(\"defaults\", {}).get(\"model\", {}).get(\"primary\"),\n    \"providerKeys\": sorted(cfg.get(\"models\", {}).get(\"providers\", {}).keys()),\n    \"pluginKeys\": sorted(cfg.get(\"plugins\", {}).get(\"entries\", {}).keys()),\n    \"webSearchProvider\": cfg.get(\"tools\", {}).get(\"web\", {}).get(\"search\", {}).get(\"provider\"),\n    \"webFetchProvider\": cfg.get(\"tools\", {}).get(\"web\", {}).get(\"fetch\", {}).get(\"provider\"),\n    \"memoryBackend\": cfg.get(\"memory\", {}).get(\"backend\"),\n    \"gatewayTokenLength\": len(cfg.get(\"gateway\", {}).get(\"auth\", {}).get(\"token\", \"\")),\n    \"paths\": {\n        \"/sandbox/.openclaw/plugin-runtime-deps\": describe(\"/sandbox/.openclaw/plugin-runtime-deps\"),\n        \"/sandbox/.openclaw-data/plugin-runtime-deps\": describe(\"/sandbox/.openclaw-data/plugin-runtime-deps\"),\n    },\n}\nprint(\"[nemoclaw-build-debug] \" + json.dumps(summary, sort_keys=True))''')"
+
 # SECURITY: Clear any gateway auth token that openclaw doctor/plugins may have
 # auto-generated. The real token is created at container startup by the
 # entrypoint (generate_gateway_token) and never stored in openclaw.json.
@@ -373,7 +430,8 @@ path = os.path.expanduser('~/.openclaw/openclaw.json'); \
 cfg = json.load(open(path)); \
 cfg.setdefault('gateway', {}).setdefault('auth', {})['token'] = ''; \
 json.dump(cfg, open(path, 'w'), indent=2); \
-os.chmod(path, 0o600)"
+os.chmod(path, 0o600)" \
+    && python3 -c "exec('''import json, os, stat\nfrom pathlib import Path\n\ndef describe(path_str):\n    path = Path(path_str)\n    entry = {\"exists\": path.exists() or path.is_symlink()}\n    if entry[\"exists\"]:\n        st = path.lstat()\n        entry[\"kind\"] = \"symlink\" if stat.S_ISLNK(st.st_mode) else (\"directory\" if stat.S_ISDIR(st.st_mode) else \"file\")\n        entry[\"mode\"] = oct(stat.S_IMODE(st.st_mode))\n        if entry[\"kind\"] == \"symlink\":\n            entry[\"target\"] = os.readlink(path_str)\n    return entry\n\nconfig_path = os.path.expanduser(\"~/.openclaw/openclaw.json\")\ncfg = json.load(open(config_path))\nsummary = {\n    \"stage\": \"post-token-clear\",\n    \"primaryModel\": cfg.get(\"agents\", {}).get(\"defaults\", {}).get(\"model\", {}).get(\"primary\"),\n    \"providerKeys\": sorted(cfg.get(\"models\", {}).get(\"providers\", {}).keys()),\n    \"pluginKeys\": sorted(cfg.get(\"plugins\", {}).get(\"entries\", {}).keys()),\n    \"webSearchProvider\": cfg.get(\"tools\", {}).get(\"web\", {}).get(\"search\", {}).get(\"provider\"),\n    \"webFetchProvider\": cfg.get(\"tools\", {}).get(\"web\", {}).get(\"fetch\", {}).get(\"provider\"),\n    \"memoryBackend\": cfg.get(\"memory\", {}).get(\"backend\"),\n    \"gatewayTokenLength\": len(cfg.get(\"gateway\", {}).get(\"auth\", {}).get(\"token\", \"\")),\n    \"paths\": {\n        \"/sandbox/.openclaw/plugin-runtime-deps\": describe(\"/sandbox/.openclaw/plugin-runtime-deps\"),\n        \"/sandbox/.openclaw-data/plugin-runtime-deps\": describe(\"/sandbox/.openclaw-data/plugin-runtime-deps\"),\n    },\n}\nprint(\"[nemoclaw-build-debug] \" + json.dumps(summary, sort_keys=True))''')"
 
 # Lock openclaw.json via DAC: chown to root so the sandbox user cannot modify
 # it at runtime.  This works regardless of Landlock enforcement status.
@@ -388,19 +446,27 @@ os.chmod(path, 0o600)"
 # hadolint ignore=DL3002
 USER root
 
-# Ensure .openclaw-data subdirs and symlinks exist for logs, credentials, and
-# sandbox. These are defined in Dockerfile.base but the GHCR base image may
+# Ensure .openclaw-data subdirs and symlinks exist for logs, credentials,
+# sandbox, plugin-runtime-deps, qmd, tasks, and wiki. These are defined in Dockerfile.base but the GHCR base image may
 # not have been rebuilt yet. Idempotent — harmless once the base catches up.
 # Ref: https://github.com/NVIDIA/NemoClaw/issues/804
 RUN mkdir -p /sandbox/.openclaw-data/logs \
         /sandbox/.openclaw-data/credentials \
         /sandbox/.openclaw-data/sandbox \
         /sandbox/.openclaw-data/media \
+        /sandbox/.openclaw-data/plugin-runtime-deps \
+        /sandbox/.openclaw-data/qmd \
+        /sandbox/.openclaw-data/tasks \
+        /sandbox/.openclaw-data/wiki \
     && chown sandbox:sandbox /sandbox/.openclaw-data/logs \
         /sandbox/.openclaw-data/credentials \
         /sandbox/.openclaw-data/sandbox \
         /sandbox/.openclaw-data/media \
-    && for dir in logs credentials sandbox media; do \
+        /sandbox/.openclaw-data/plugin-runtime-deps \
+        /sandbox/.openclaw-data/qmd \
+        /sandbox/.openclaw-data/tasks \
+        /sandbox/.openclaw-data/wiki \
+    && for dir in logs credentials sandbox media plugin-runtime-deps qmd tasks wiki; do \
         if [ -L "/sandbox/.openclaw/$dir" ]; then true; \
         elif [ -e "/sandbox/.openclaw/$dir" ]; then \
             cp -a "/sandbox/.openclaw/$dir/." "/sandbox/.openclaw-data/$dir/" 2>/dev/null || true; \

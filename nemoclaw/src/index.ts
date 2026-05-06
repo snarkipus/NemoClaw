@@ -12,6 +12,7 @@
  */
 
 import { execFileSync } from "node:child_process";
+import os from "node:os";
 import { handleSlashCommand } from "./commands/slash.js";
 import {
   describeOnboardEndpoint,
@@ -19,6 +20,40 @@ import {
   loadOnboardConfig,
 } from "./onboard/config.js";
 import { scanForSecrets, isMemoryPath } from "./security/secret-scanner.js";
+
+const originalNetworkInterfaces = os.networkInterfaces.bind(os);
+
+Object.defineProperty(os, "networkInterfaces", {
+  configurable: true,
+  value: () => {
+    try {
+      return originalNetworkInterfaces();
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : "";
+      const code =
+        typeof error === "object" && error !== null && "code" in error ? String(error.code) : "";
+      if (!message.includes("uv_interface_addresses") && code !== "EACCES") {
+        throw error;
+      }
+
+      console.warn(
+        "[Sandbox Compatibility] Restricted network interface discovery detected. Falling back to loopback.",
+      );
+      return {
+        lo: [
+          {
+            address: "127.0.0.1",
+            netmask: "255.0.0.0",
+            family: "IPv4",
+            mac: "00:00:00:00:00:00",
+            internal: true,
+            cidr: "127.0.0.1/8",
+          },
+        ],
+      };
+    }
+  },
+});
 
 type PluginScalar = string | number | boolean | null | undefined;
 type PluginValue = PluginScalar | PluginRecord | PluginValue[];
