@@ -23,7 +23,6 @@ import {
   knownChannelNames,
   persistChannelTokens,
 } from "./sandbox-channels";
-
 const useColor = !process.env.NO_COLOR && !!process.stdout.isTTY;
 const trueColor =
   useColor && (process.env.COLORTERM === "truecolor" || process.env.COLORTERM === "24bit");

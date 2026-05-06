@@ -36,6 +36,11 @@ set -euo pipefail
 # cannot resolve id/chown/chmod/tee from an attacker-controlled location.
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
+# OpenClaw exposes the pre-auth gateway WebSocket handshake timeout
+# as an environment override. Keep the prior NemoClaw 60s sandbox default
+# without patching OpenClaw's compiled dist.
+export OPENCLAW_HANDSHAKE_TIMEOUT_MS="${OPENCLAW_HANDSHAKE_TIMEOUT_MS:-60000}"
+
 # ── Early stderr/stdout capture ──────────────────────────────────
 # Capture all entrypoint output to /tmp/nemoclaw-start.log so that if
 # the script crashes before touch /tmp/gateway.log (e.g., a Landlock
@@ -2074,34 +2079,9 @@ PROXYEOF
 # nemoclaw-configure-guard begin
 openclaw() {
   case "$1" in
-    configure)
-      echo "Error: 'openclaw configure' cannot modify config inside the sandbox." >&2
-      echo "Changes inside the sandbox do not persist across rebuilds." >&2
-      echo "" >&2
-      echo "To change your configuration, exit the sandbox and run:" >&2
-      echo "  nemoclaw onboard --resume" >&2
-      echo "" >&2
-      echo "This rebuilds the sandbox with your updated settings." >&2
-      return 1
-      ;;
-    config)
-      case "$2" in
-        set | unset)
-          echo "Error: 'openclaw config $2' cannot modify config inside the sandbox." >&2
-          echo "Changes inside the sandbox do not persist across rebuilds." >&2
-          echo "" >&2
-          echo "To change your configuration, exit the sandbox and run:" >&2
-          echo "  nemoclaw onboard --resume" >&2
-          echo "" >&2
-          echo "This rebuilds the sandbox with your updated settings." >&2
-          return 1
-          ;;
-      esac
-      ;;
     channels)
       case "$2" in
-        list | "" | -h | --help) ;;
-        *)
+        add | remove | login | logout)
           echo "Error: 'openclaw channels $2' cannot modify channels inside the sandbox." >&2
           echo "Changes inside the sandbox do not persist across rebuilds." >&2
           echo "" >&2
@@ -2282,6 +2262,52 @@ chown_tree_no_symlink_follow() {
   local owner="$1" target="$2"
   [ -d "$target" ] || return 0
   find -P "$target" \( -type d -o -type f \) -exec chown "$owner" {} + 2>/dev/null || true
+}
+
+seed_workspace_templates() {
+  local config_dir="/sandbox/.openclaw"
+  local template_dir="/usr/local/lib/node_modules/openclaw/docs/reference/templates"
+  local workspace_dir
+
+  if [ ! -d "$template_dir" ]; then
+    echo "[setup] OpenClaw workspace templates not found: $template_dir" >&2
+    return 0
+  fi
+
+  for workspace_dir in "$config_dir"/workspace "$config_dir"/workspace-*; do
+    [ -d "$workspace_dir" ] || continue
+    if [ -L "$workspace_dir" ]; then
+      echo "[SECURITY] refusing symlinked workspace template target: $workspace_dir" >&2
+      continue
+    fi
+
+    TEMPLATE_DIR="$template_dir" WORKSPACE_DIR="$workspace_dir" python3 - <<'PYSEEDWORKSPACE'
+import os
+from pathlib import Path
+
+template_dir = Path(os.environ["TEMPLATE_DIR"])
+workspace_dir = Path(os.environ["WORKSPACE_DIR"])
+names = ["AGENTS.md", "SOUL.md", "TOOLS.md", "IDENTITY.md", "USER.md", "HEARTBEAT.md"]
+
+def strip_front_matter(content: str) -> str:
+    if not content.startswith("---"):
+        return content
+    end = content.find("\n---", 3)
+    if end == -1:
+        return content
+    return content[end + len("\n---"):].lstrip()
+
+for name in names:
+    dest = workspace_dir / name
+    if dest.exists():
+        continue
+    src = template_dir / name
+    if not src.exists():
+        continue
+    dest.write_text(strip_front_matter(src.read_text(encoding="utf-8")), encoding="utf-8")
+PYSEEDWORKSPACE
+    chown_tree_no_symlink_follow sandbox:sandbox "$workspace_dir" 2>/dev/null || true
+  done
 }
 
 legacy_symlinks_exist() {
@@ -2531,6 +2557,7 @@ if [ "$(id -u)" -ne 0 ]; then
   normalize_mutable_config_perms
   write_auth_profile
   harden_auth_profiles
+  seed_workspace_templates
 
   # In non-root mode, detach gateway stdout/stderr from the sandbox-create
   # stream so openshell sandbox create can return once the container is ready.
@@ -2631,7 +2658,7 @@ chmod 600 /tmp/auto-pair.log
 # Ref: https://github.com/NVIDIA/NemoClaw/issues/1260
 provision_agent_workspaces() {
   local config_dir="/sandbox/.openclaw"
-  local names=""
+  local names="workspace"
   local d name config_names
 
   # Discover existing workspace-* dirs.
@@ -2699,6 +2726,7 @@ NODE
   done
 }
 provision_agent_workspaces
+seed_workspace_templates
 
 # Defence-in-depth: verify /tmp file permissions before launching services.
 # Pass the HTTP proxy-fix path so it is validated alongside proxy-env.sh

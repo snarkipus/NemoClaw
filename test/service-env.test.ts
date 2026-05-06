@@ -984,6 +984,14 @@ describe("service environment", () => {
       expect(result).toBe("wsProxyFixedRequest");
     });
 
+    it("does not return a placeholder socket while CONNECT is pending", () => {
+      const src = readFileSync(wsFixPath, "utf-8");
+
+      expect(src).not.toContain("new node_net_1.default.Socket");
+      expect(src).not.toContain('require("node:net")');
+      expect(src).toContain("return undefined;");
+    });
+
     it("strips port from opts.host to avoid double-port CONNECT path", () => {
       // When callers pass host:"gateway.discord.gg:443" instead of hostname,
       // the CONNECT target must be "gateway.discord.gg:443" not

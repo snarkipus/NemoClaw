@@ -192,6 +192,36 @@ describe("generate-openclaw-config.py: config generation", () => {
     expect(config.models.providers.deepinfra).toBeUndefined();
   });
 
+  it("keeps managed inference config while adding the selected provider alias", () => {
+    const config = runConfigScript({
+      NEMOCLAW_MODEL: "mimo-v2.5-pro",
+      NEMOCLAW_PROVIDER_KEY: "xiaomi",
+      NEMOCLAW_PRIMARY_MODEL_REF: "xiaomi/mimo-v2.5-pro",
+      NEMOCLAW_INFERENCE_BASE_URL: "https://inference.local/v1",
+      NEMOCLAW_INFERENCE_API: "openai-completions",
+      NEMOCLAW_INFERENCE_COMPAT_B64: Buffer.from(JSON.stringify({ supportsStore: false })).toString(
+        "base64",
+      ),
+    });
+
+    expect(Object.keys(config.models.providers).sort()).toEqual(["inference", "xiaomi"]);
+    expect(config.models.providers.inference.baseUrl).toBe("https://inference.local/v1");
+    expect(config.models.providers.inference.apiKey).toBe("unused");
+    expect(config.models.providers.inference.models[0]).toMatchObject({
+      id: "mimo-v2.5-pro",
+      name: "inference/mimo-v2.5-pro",
+      compat: { supportsStore: false },
+    });
+    expect(config.models.providers.xiaomi.baseUrl).toBe("https://inference.local/v1");
+    expect(config.models.providers.xiaomi.apiKey).toBe("unused");
+    expect(config.models.providers.xiaomi.models[0]).toMatchObject({
+      id: "mimo-v2.5-pro",
+      name: "xiaomi/mimo-v2.5-pro",
+      compat: { supportsStore: false },
+    });
+    expect(config.agents.defaults.model.primary).toBe("xiaomi/mimo-v2.5-pro");
+  });
+
   it("sets gateway auth token to empty string", () => {
     const config = runConfigScript();
     expect(config.gateway.auth.token).toBe("");

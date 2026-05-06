@@ -1,0 +1,43 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+preset:
+  name: agentmail
+  description: "AgentMail API, docs, and WebSocket access"
+
+network_policies:
+  agentmail:
+    name: agentmail
+    endpoints:
+      - host: agentmail.to
+        port: 443
+      - host: api.agentmail.to
+        port: 443
+        protocol: rest
+        enforcement: enforce
+        tls: terminate
+        rules:
+          - allow: { method: GET, path: "/**" }
+          - allow: { method: POST, path: "/**" }
+      - host: docs.agentmail.to
+        port: 443
+        protocol: rest
+        enforcement: enforce
+        tls: terminate
+        rules:
+          - allow: { method: GET, path: "/**" }
+      - host: ws.agentmail.to
+        port: 443
+        tls: skip
+        access: full
+    binaries:
+      - { path: /usr/bin/curl }
+      - { path: /usr/local/bin/node }
+      - { path: /usr/bin/node }
+      - { path: /sandbox/.venv/bin/python }
+      - { path: /sandbox/.venv/bin/python3 }
+      - { path: /sandbox/.venv/bin/pip }
+      - { path: /sandbox/.openclaw/agentmail-venv/bin/python }
+      - { path: /sandbox/.openclaw/agentmail-venv/bin/python3 }
+      - { path: /sandbox/.openclaw/agentmail-venv/bin/pip }
+      - { path: /usr/bin/python3.11 }

@@ -207,8 +207,8 @@ def build_config(env: dict | None = None) -> dict:
     )
     allow_insecure = parsed.scheme == "http"
 
-    providers = {
-        provider_key: {
+    def _provider_config(model_ref: str) -> dict:
+        return {
             "baseUrl": inference_base_url,
             "apiKey": "unused",
             "api": inference_api,
@@ -216,7 +216,7 @@ def build_config(env: dict | None = None) -> dict:
                 {
                     **({"compat": inference_compat} if inference_compat else {}),
                     "id": model,
-                    "name": primary_model_ref,
+                    "name": model_ref,
                     "reasoning": reasoning,
                     "input": inference_inputs,
                     "cost": {
@@ -230,7 +230,13 @@ def build_config(env: dict | None = None) -> dict:
                 }
             ],
         }
-    }
+
+    managed_model_ref = (
+        primary_model_ref if provider_key == "inference" else f"inference/{model}"
+    )
+    providers = {"inference": _provider_config(managed_model_ref)}
+    if provider_key != "inference":
+        providers[provider_key] = _provider_config(primary_model_ref)
 
     # OpenClaw stages runtime dependencies for every bundled enabledByDefault
     # provider plugin. NemoClaw bakes one model provider into openclaw.json, so

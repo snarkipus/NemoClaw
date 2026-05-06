@@ -81,6 +81,8 @@ type OnboardTestInternals = {
   getSandboxStateFromOutputs: ShimFn<string>;
   getStableGatewayImageRef: (versionOutput?: string | null) => string | null;
   getSuggestedPolicyPresets: ShimFn<string[]>;
+  getPostOnboardDisabledChannels: (value?: string | null) => string[];
+  getPostOnboardDisableConfigPaths: (channel: string) => string[];
   isGatewayHealthy: ShimFn<boolean>;
   classifyValidationFailure: ShimFn<ValidationClassification>;
   hasResponsesToolCall: (body?: string | null) => boolean;
@@ -183,6 +185,8 @@ const {
   getSandboxStateFromOutputs,
   getStableGatewayImageRef,
   getSuggestedPolicyPresets,
+  getPostOnboardDisabledChannels,
+  getPostOnboardDisableConfigPaths,
   isGatewayHealthy,
   classifyValidationFailure,
   hasResponsesToolCall,
@@ -311,6 +315,7 @@ describe("onboard helpers", () => {
     assert.match(script, /apiKey.*unused/);
     assert.match(script, /agents\.defaults\.model\.primary/);
     assert.match(script, /curl[\s\S]*\/chat\/completions/);
+    assert.match(script, /"max_tokens": 256/);
     assert.doesNotMatch(script, /COMPATIBLE_API_KEY/);
     assert.doesNotMatch(script, /api\.deepinfra\.com/);
   });
@@ -2144,6 +2149,21 @@ startGateway(null).catch(() => {});
     expect(parsePolicyPresetEnv("single")).toEqual(["single"]);
   });
 
+  it("getPostOnboardDisabledChannels validates known channel names", () => {
+    expect(getPostOnboardDisabledChannels("discord, telegram")).toEqual([
+      "discord",
+      "telegram",
+    ]);
+    expect(getPostOnboardDisabledChannels("")).toEqual([]);
+  });
+
+  it("disables both channel and default account flags after scaffold", () => {
+    expect(getPostOnboardDisableConfigPaths("discord")).toEqual([
+      "channels.discord.enabled",
+      "channels.discord.accounts.default.enabled",
+    ]);
+  });
+
   it("summarizeCurlFailure formats curl errors with exit code and truncated detail", () => {
     expect(summarizeCurlFailure(7, "Connection refused", "")).toBe(
       "curl failed (exit 7): Connection refused",
@@ -3641,7 +3661,7 @@ const { createSandbox } = require(${onboardPath});
   });
 
   it(
-    "creates providers for messaging tokens and attaches them to the sandbox",
+    "creates providers for attached credentials and attaches them to the sandbox",
     { timeout: 60_000 },
     async () => {
       const repoRoot = path.join(import.meta.dirname, "..");
@@ -3720,10 +3740,14 @@ const { createSandbox } = require(${onboardPath});
 (async () => {
   process.env.OPENSHELL_GATEWAY = "nemoclaw";
   process.env.DISCORD_BOT_TOKEN = "test-discord-token-value";
-  process.env.SLACK_BOT_TOKEN = "xoxb-test-slack-token-value";
-  process.env.SLACK_APP_TOKEN = "xapp-test-slack-app-token-value";
-  process.env.TELEGRAM_BOT_TOKEN = "123456:ABC-test-telegram-token";
-  process.env.KUBECONFIG = "/tmp/host-kubeconfig";
+      process.env.SLACK_BOT_TOKEN = "xoxb-test-slack-token-value";
+      process.env.SLACK_APP_TOKEN = "xapp-test-slack-app-token-value";
+      process.env.TELEGRAM_BOT_TOKEN = "123456:ABC-test-telegram-token";
+      process.env.GITHUB_TOKEN = "ghp-test-github-token-value";
+      process.env.XAI_API_KEY = "xai-test-token-value";
+      process.env.FIRECRAWL_API_KEY = "fc-test-token-value";
+      process.env.AGENTMAIL_API_KEY = "am-test-token-value";
+      process.env.KUBECONFIG = "/tmp/host-kubeconfig";
   process.env.SSH_AUTH_SOCK = "/tmp/host-ssh-agent.sock";
   const sandboxName = await createSandbox(null, "gpt-5.4");
   console.log(JSON.stringify({ sandboxName, commands }));
@@ -3777,7 +3801,22 @@ const { createSandbox } = require(${onboardPath});
       assert.ok(telegramProvider, "expected my-assistant-telegram-bridge provider create command");
       assert.match(telegramProvider.command, /--credential TELEGRAM_BOT_TOKEN/);
 
-      // Verify sandbox create includes --provider flags for all three
+      const extraProviders = [
+        ["my-assistant-github", "GITHUB_TOKEN", "ghp-test-github-token-value"],
+        ["my-assistant-xai-search", "XAI_API_KEY", "xai-test-token-value"],
+        ["my-assistant-firecrawl", "FIRECRAWL_API_KEY", "fc-test-token-value"],
+        ["my-assistant-agentmail", "AGENTMAIL_API_KEY", "am-test-token-value"],
+      ];
+      for (const [providerName, envKey, token] of extraProviders) {
+        const providerCommand = providerCommands.find((e: CommandEntry) =>
+          e.command.includes(providerName),
+        );
+        assert.ok(providerCommand, `expected ${providerName} provider create command`);
+        assert.match(providerCommand.command, new RegExp(`--credential ${envKey}`));
+        assert.equal(providerCommand.env?.[envKey], token);
+      }
+
+      // Verify sandbox create includes --provider flags for all attached providers.
       const createCommand = payload.commands.find((e: CommandEntry) =>
         e.command.includes("sandbox create"),
       );
@@ -3790,6 +3829,10 @@ const { createSandbox } = require(${onboardPath});
       assert.match(createCommand.policyContent || "", /network_policies:/);
       assert.match(createCommand.policyContent || "", /slack:/);
       assert.match(createCommand.policyContent || "", /wss-primary\.slack\.com/);
+      assert.match(createCommand.command, /--provider my-assistant-github/);
+      assert.match(createCommand.command, /--provider my-assistant-xai-search/);
+      assert.match(createCommand.command, /--provider my-assistant-firecrawl/);
+      assert.match(createCommand.command, /--provider my-assistant-agentmail/);
 
       // Discord and Telegram tokens must NOT appear in the sandbox create command
       // (they flow exclusively through the openshell provider credential system).
@@ -3799,6 +3842,9 @@ const { createSandbox } = require(${onboardPath});
       // openshell:resolve:env: placeholders resolve inside the container.
       assert.match(createCommand.command, /SLACK_BOT_TOKEN=xoxb-test-slack-token-value/);
       assert.match(createCommand.command, /SLACK_APP_TOKEN=xapp-test-slack-app-token-value/);
+      // xAI tools need XAI_API_KEY in the Gateway process environment; the
+      // OpenShell provider still handles proxy-time placeholder rewriting.
+      assert.match(createCommand.command, /XAI_API_KEY=xai-test-token-value/);
 
       // Verify blocked credentials are NOT in the sandbox spawn environment
       assert.ok(createCommand.env, "expected env to be captured from spawn call");
@@ -3827,6 +3873,9 @@ const { createSandbox } = require(${onboardPath});
         undefined,
         "NVIDIA_API_KEY must not be in sandbox env",
       );
+      for (const envKey of ["GITHUB_TOKEN", "XAI_API_KEY", "FIRECRAWL_API_KEY", "AGENTMAIL_API_KEY"]) {
+        assert.equal(createCommand.env[envKey], undefined, `${envKey} must not be in sandbox env`);
+      }
       assert.equal(
         createCommand.env.KUBECONFIG,
         undefined,
@@ -3856,6 +3905,13 @@ const { createSandbox } = require(${onboardPath});
         !envString.includes("123456:ABC-test-telegram-token"),
         "Telegram token value must not leak into sandbox env",
       );
+      for (const rawToken of [
+        "ghp-test-github-token-value",
+        "fc-test-token-value",
+        "am-test-token-value",
+      ]) {
+        assert.ok(!envString.includes(rawToken), `${rawToken} must not leak into sandbox env`);
+      }
     },
   );
 
@@ -5884,6 +5940,66 @@ const { setupMessagingChannels } = require(${onboardPath});
 
       assert.ok(Array.isArray(channels), "expected an array return value");
       assert.equal(channels.length, 0, "expected empty array when no tokens are set");
+    },
+  );
+
+  it(
+    "non-interactive setupMessagingChannels honors NEMOCLAW_MESSAGING_CHANNELS",
+    { timeout: 60_000 },
+    async () => {
+      const repoRoot = path.join(import.meta.dirname, "..");
+      const tmpDir = fs.mkdtempSync(
+        path.join(os.tmpdir(), "nemoclaw-onboard-messaging-select-"),
+      );
+      const fakeBin = path.join(tmpDir, "bin");
+      const scriptPath = path.join(tmpDir, "messaging-select.js");
+      const onboardPath = JSON.stringify(path.join(repoRoot, "dist", "lib", "onboard.js"));
+      const runnerPath = JSON.stringify(path.join(repoRoot, "dist", "lib", "runner.js"));
+      const httpProbePath = JSON.stringify(path.join(repoRoot, "dist", "lib", "http-probe.js"));
+
+      fs.mkdirSync(fakeBin, { recursive: true });
+      fs.writeFileSync(path.join(fakeBin, "openshell"), "#!/usr/bin/env bash\nexit 0\n", {
+        mode: 0o755,
+      });
+
+      const script = String.raw`
+const runner = require(${runnerPath});
+runner.run = () => ({ status: 0 });
+runner.runCapture = () => "";
+const httpProbe = require(${httpProbePath});
+httpProbe.runCurlProbe = () => ({ ok: true, httpStatus: 200, curlStatus: 0, body: '{"ok":true}', stderr: "", message: "" });
+
+const { setupMessagingChannels } = require(${onboardPath});
+
+(async () => {
+  const result = await setupMessagingChannels();
+  console.log(JSON.stringify(result));
+})().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});
+`;
+      fs.writeFileSync(scriptPath, script);
+
+      const result = spawnSync(process.execPath, [scriptPath], {
+        cwd: repoRoot,
+        encoding: "utf-8",
+        env: {
+          ...process.env,
+          HOME: tmpDir,
+          PATH: `${fakeBin}:${process.env.PATH || ""}`,
+          NEMOCLAW_NON_INTERACTIVE: "1",
+          NEMOCLAW_MESSAGING_CHANNELS: "telegram",
+          TELEGRAM_BOT_TOKEN: "123456:ABC-test-telegram-token",
+          DISCORD_BOT_TOKEN: "discord-token",
+          SLACK_BOT_TOKEN: "xoxb-valid-slack-token",
+        },
+      });
+
+      assert.equal(result.status, 0, result.stderr);
+      const channels = parseStdoutJson<string[]>(result.stdout);
+
+      assert.deepEqual(channels, ["telegram"]);
     },
   );
 

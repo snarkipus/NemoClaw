@@ -1380,9 +1380,19 @@ if provider.get("apiKey") != "unused":
     die("models.providers.${MANAGED_PROVIDER_ID}.apiKey must remain the non-secret placeholder 'unused'")
 
 primary = cfg.get("agents", {}).get("defaults", {}).get("model", {}).get("primary")
-expected_primary = "${MANAGED_PROVIDER_ID}/" + model
-if primary != expected_primary:
-    die("agents.defaults.model.primary is %r; expected %r" % (primary, expected_primary))
+if not isinstance(primary, str) or "/" not in primary:
+    die("agents.defaults.model.primary is %r; expected a provider/model ref" % (primary,))
+expected_suffix = "/" + model
+if not primary.endswith(expected_suffix):
+    die("agents.defaults.model.primary is %r; expected suffix %r" % (primary, expected_suffix))
+primary_provider = primary.split("/", 1)[0]
+primary_cfg = providers.get(primary_provider)
+if not isinstance(primary_cfg, dict):
+    die("openclaw.json missing models.providers.%s" % primary_provider)
+if primary_cfg.get("baseUrl") != "${INFERENCE_ROUTE_URL}":
+    die("models.providers.%s.baseUrl is %r; expected ${INFERENCE_ROUTE_URL}" % (primary_provider, primary_cfg.get("baseUrl")))
+if primary_cfg.get("apiKey") != "unused":
+    die("models.providers.%s.apiKey must remain the non-secret placeholder 'unused'" % primary_provider)
 
 print("OPENCLAW_CONFIG_OK")
 PYCFG
@@ -1402,7 +1412,7 @@ print(json.dumps({
     "messages": [
         {"role": "user", "content": "Reply with exactly: PONG"}
     ],
-    "max_tokens": 32,
+    "max_tokens": 256,
 }))
 PYPAYLOAD
 
@@ -4105,14 +4115,37 @@ async function createSandbox(
     .filter(({ envKey }) => !enabledEnvKeys || enabledEnvKeys.has(envKey))
     .filter(({ envKey }) => !disabledEnvKeys.has(envKey));
 
+  const attachedCredentialDefs: MessagingTokenDef[] = [...messagingTokenDefs];
   if (webSearchConfig) {
-    messagingTokenDefs.push({
+    attachedCredentialDefs.push({
       name: `${sandboxName}-brave-search`,
       envKey: webSearch.BRAVE_API_KEY_ENV,
       token: getCredential(webSearch.BRAVE_API_KEY_ENV),
     });
   }
-  const hasMessagingTokens = messagingTokenDefs.some(({ token }) => !!token);
+  attachedCredentialDefs.push(
+    {
+      name: `${sandboxName}-xai-search`,
+      envKey: "XAI_API_KEY",
+      token: getMessagingToken("XAI_API_KEY"),
+    },
+    {
+      name: `${sandboxName}-firecrawl`,
+      envKey: "FIRECRAWL_API_KEY",
+      token: getMessagingToken("FIRECRAWL_API_KEY"),
+    },
+    {
+      name: `${sandboxName}-github`,
+      envKey: "GITHUB_TOKEN",
+      token: getMessagingToken("GITHUB_TOKEN"),
+    },
+    {
+      name: `${sandboxName}-agentmail`,
+      envKey: "AGENTMAIL_API_KEY",
+      token: getMessagingToken("AGENTMAIL_API_KEY"),
+    },
+  );
+  const hasAttachedCredentials = attachedCredentialDefs.some(({ token }) => !!token);
 
   // Reconcile local registry state with the live OpenShell gateway state.
   const liveExists = pruneStaleSandboxEntry(sandboxName);
@@ -4165,16 +4198,16 @@ async function createSandbox(
     // force recreation when at least one required provider doesn't exist yet —
     // this avoids destroying sandboxes already created with provider attachments.
     const needsProviderMigration =
-      hasMessagingTokens &&
-      messagingTokenDefs.some(({ name, token }) => token && !providerExistsInGateway(name));
+      hasAttachedCredentials &&
+      attachedCredentialDefs.some(({ name, token }) => token && !providerExistsInGateway(name));
     const selectionDrift = getSelectionDrift(sandboxName, provider, model);
     const confirmedSelectionDrift = selectionDrift.changed && !selectionDrift.unknown;
 
     // Detect whether any messaging credential has been rotated since the
     // sandbox was created. Provider credentials are resolved once at sandbox
     // startup, so a rotated token requires a rebuild to take effect.
-    const credentialRotation = hasMessagingTokens
-      ? detectMessagingCredentialRotation(sandboxName, messagingTokenDefs)
+    const credentialRotation = hasAttachedCredentials
+      ? detectMessagingCredentialRotation(sandboxName, attachedCredentialDefs)
       : { changed: false, changedProviders: [] };
 
     if (
@@ -4190,7 +4223,7 @@ async function createSandbox(
           } else {
             // Upsert messaging providers even on reuse so credential changes take
             // effect without requiring a full sandbox recreation.
-            upsertMessagingProviders(messagingTokenDefs);
+            upsertMessagingProviders(attachedCredentialDefs);
             if (selectionDrift.unknown) {
               note(
                 "  [non-interactive] Existing provider/model selection is unreadable; reusing sandbox.",
@@ -4239,7 +4272,7 @@ async function createSandbox(
           console.log(`  Sandbox '${sandboxName}' already exists.`);
           console.log("  Choosing 'n' will delete the existing sandbox and create a new one.");
           if (await promptYesNoOrDefault("  Reuse existing sandbox?", null, true)) {
-            upsertMessagingProviders(messagingTokenDefs);
+            upsertMessagingProviders(attachedCredentialDefs);
             const reusedPort2 = ensureDashboardForward(sandboxName, chatUiUrl);
             process.env.CHAT_UI_URL = `http://127.0.0.1:${reusedPort2}`;
             updateReusedSandboxMetadata(
@@ -4277,10 +4310,10 @@ async function createSandbox(
         } else {
           console.error("  State backup failed — aborting rebuild to prevent data loss.");
           console.error("  Pass --recreate-sandbox to force recreation without backup.");
-          upsertMessagingProviders(messagingTokenDefs);
+          upsertMessagingProviders(attachedCredentialDefs);
           // Update stored hashes so the next onboard doesn't re-detect rotation.
           const abortHashes: Record<string, string> = {};
-          for (const { envKey, token } of messagingTokenDefs) {
+          for (const { envKey, token } of attachedCredentialDefs) {
             const hash = token ? hashCredential(token) : null;
             if (hash) abortHashes[envKey] = hash;
           }
@@ -4303,9 +4336,9 @@ async function createSandbox(
         const errorMessage = err instanceof Error ? err.message : String(err);
         console.error(`  State backup threw: ${errorMessage} — aborting rebuild.`);
         console.error("  Pass --recreate-sandbox to force recreation without backup.");
-        upsertMessagingProviders(messagingTokenDefs);
+        upsertMessagingProviders(attachedCredentialDefs);
         const abortHashes: Record<string, string> = {};
-        for (const { envKey, token } of messagingTokenDefs) {
+        for (const { envKey, token } of attachedCredentialDefs) {
           const hash = token ? hashCredential(token) : null;
           if (hash) abortHashes[envKey] = hash;
         }
@@ -4479,7 +4512,7 @@ async function createSandbox(
     process.exit(1);
   }
   const tokensByEnvKey = Object.fromEntries(
-    messagingTokenDefs.map(({ envKey, token }) => [envKey, token]),
+    attachedCredentialDefs.map(({ envKey, token }) => [envKey, token]),
   );
   const activeMessagingChannels = [
     ...new Set(
@@ -4519,12 +4552,12 @@ async function createSandbox(
   ];
   // --gpu is intentionally omitted. See comment in startGateway().
 
-  // Create OpenShell providers for messaging credentials so they flow through
+  // Create OpenShell providers for attached credentials so they flow through
   // the provider/placeholder system instead of raw env vars. The L7 proxy
   // rewrites Authorization headers (Bearer/Bot) and URL-path segments
   // (/bot{TOKEN}/) with real secrets at egress (OpenShell >= 0.0.20).
-  const messagingProviders = upsertMessagingProviders(messagingTokenDefs);
-  for (const p of messagingProviders) {
+  const attachedProviders = upsertMessagingProviders(attachedCredentialDefs);
+  for (const p of attachedProviders) {
     createArgs.push("--provider", p);
   }
 
@@ -4692,6 +4725,10 @@ async function createSandbox(
       envArgs.push(formatEnvAssignment(webSearch.BRAVE_API_KEY_ENV, braveKey));
     }
   }
+  const xaiApiKey = getCredential("XAI_API_KEY") || process.env.XAI_API_KEY;
+  if (xaiApiKey) {
+    envArgs.push(formatEnvAssignment("XAI_API_KEY", xaiApiKey));
+  }
   // Slack Socket Mode requires both tokens in the container env so the baked
   // openshell:resolve:env: placeholders in openclaw.json are substituted.
   // The provider registration above handles L7 proxy auth header rewriting;
@@ -4855,7 +4892,7 @@ async function createSandbox(
 
   // Register only after confirmed ready — prevents phantom entries
   const providerCredentialHashes: Record<string, string> = {};
-  for (const { envKey, token } of messagingTokenDefs) {
+  for (const { envKey, token } of attachedCredentialDefs) {
     const hash = token ? hashCredential(token) : null;
     if (hash) {
       providerCredentialHashes[envKey] = hash;
@@ -4910,11 +4947,11 @@ async function createSandbox(
     ignoreError: true,
   });
 
-  // Check that messaging providers exist in the gateway (sandbox attachment
+  // Check that attached providers exist in the gateway (sandbox attachment
   // cannot be verified via CLI yet — only gateway-level existence is checked).
-  for (const p of messagingProviders) {
+  for (const p of attachedProviders) {
     if (!providerExistsInGateway(p)) {
-      console.error(`  ⚠ Messaging provider '${p}' was not found in the gateway.`);
+      console.error(`  ⚠ Attached provider '${p}' was not found in the gateway.`);
       console.error(`    The credential may not be available inside the sandbox.`);
       console.error(
         `    To fix: openshell provider create --name ${p} --type generic --credential <KEY>`,
@@ -5677,6 +5714,10 @@ async function setupNim(
             }
 
             if (selected.key === "custom") {
+              if (remoteConfig.skipVerify) {
+                preferredInferenceApi = "openai-completions";
+                break;
+              }
               const validation = await validateCustomOpenAiLikeSelection(
                 remoteConfig.label,
                 endpointUrl || OPENAI_ENDPOINT_URL,
@@ -6501,15 +6542,45 @@ async function checkTelegramReachability(token: string) {
   }
 }
 
+function parseMessagingChannelSelection(raw: string | undefined): Set<string> | null {
+  if (!raw || !raw.trim()) return null;
+  const names = raw
+    .split(",")
+    .map((value) => value.trim().toLowerCase())
+    .filter(Boolean);
+  const valid = new Set(MESSAGING_CHANNELS.map((channel) => channel.name));
+  for (const name of names) {
+    if (!valid.has(name)) {
+      console.error(`  Unknown NEMOCLAW_MESSAGING_CHANNELS entry: ${name}`);
+      console.error(`  Valid channels: ${Array.from(valid).join(", ")}`);
+      process.exit(1);
+    }
+  }
+  return new Set(names);
+}
+
+function getPostOnboardDisabledChannels(raw: string | undefined): string[] {
+  const selected = parseMessagingChannelSelection(raw);
+  return selected ? Array.from(selected) : [];
+}
+
+function getPostOnboardDisableConfigPaths(channel: string): string[] {
+  return [`channels.${channel}.enabled`, `channels.${channel}.accounts.default.enabled`];
+}
+
 async function setupMessagingChannels(): Promise<string[]> {
   step(5, 8, "Messaging channels");
 
   const getMessagingToken = (envKey: string): string | null =>
     getCredential(envKey) || normalizeCredentialValue(process.env[envKey]) || null;
+  const requestedChannels = parseMessagingChannelSelection(process.env.NEMOCLAW_MESSAGING_CHANNELS);
+  const selectableChannels = requestedChannels
+    ? MESSAGING_CHANNELS.filter((c) => requestedChannels.has(c.name))
+    : MESSAGING_CHANNELS;
 
   // Non-interactive: skip prompt, tokens come from env/credentials
   if (isNonInteractive() || process.env.NEMOCLAW_NON_INTERACTIVE === "1") {
-    const found = MESSAGING_CHANNELS.filter((c) => getMessagingToken(c.envKey)).map((c) => c.name);
+    const found = selectableChannels.filter((c) => getMessagingToken(c.envKey)).map((c) => c.name);
     if (found.length > 0) {
       note(`  [non-interactive] Messaging tokens detected: ${found.join(", ")}`);
       if (found.includes("telegram")) {
@@ -6527,7 +6598,7 @@ async function setupMessagingChannels(): Promise<string[]> {
   // Single-keypress toggle selector — pre-select channels that already have tokens.
   // Press a channel number to toggle; press Enter to continue.
   const enabled = new Set(
-    MESSAGING_CHANNELS.filter((c) => getMessagingToken(c.envKey)).map((c) => c.name),
+    selectableChannels.filter((c) => getMessagingToken(c.envKey)).map((c) => c.name),
   );
 
   const output = process.stderr;
@@ -6831,6 +6902,49 @@ async function setupOpenclaw(sandboxName: string, model: string, provider: strin
   }
 
   console.log(`  ✓ ${agentProductName()} gateway launched inside sandbox`);
+}
+
+function disableMessagingChannelsAfterOnboard(
+  sandboxName: string,
+  selectedMessagingChannels: string[] | null | undefined,
+): void {
+  const channelsToDisable = getPostOnboardDisabledChannels(
+    process.env.NEMOCLAW_DISABLE_CHANNELS_AFTER_ONBOARD,
+  );
+  if (channelsToDisable.length === 0) return;
+
+  const selected = new Set(selectedMessagingChannels || []);
+  for (const channel of channelsToDisable) {
+    if (!selected.has(channel)) {
+      note(`  Skipping ${channel} disable: channel was not scaffolded in this sandbox.`);
+      continue;
+    }
+    for (const configPath of getPostOnboardDisableConfigPaths(channel)) {
+      const result = runOpenshell(
+        [
+          "sandbox",
+          "exec",
+          "--name",
+          sandboxName,
+          "--",
+          "openclaw",
+          "config",
+          "set",
+          configPath,
+          "false",
+        ],
+        { ignoreError: true, suppressOutput: true, stdio: ["ignore", "pipe", "pipe"] },
+      );
+      if (result.status !== 0) {
+        console.error(`  Failed to disable ${channel} after onboarding.`);
+        console.error(
+          `  Run manually: openshell sandbox exec --name ${sandboxName} -- openclaw config set ${configPath} false`,
+        );
+        process.exit(result.status || 1);
+      }
+    }
+    console.log(`  ✓ Disabled ${channel} after scaffold`);
+  }
 }
 
 // ── Step 7: Policy presets ───────────────────────────────────────
@@ -8989,6 +9103,10 @@ async function onboard(opts: OnboardOptions = {}): Promise<void> {
       ? latestSession.messagingChannels
       : [];
     const activeMessagingChannels = registry.getSandbox(sandboxName)?.messagingChannels;
+    disableMessagingChannelsAfterOnboard(
+      sandboxName,
+      Array.isArray(activeMessagingChannels) ? activeMessagingChannels : selectedMessagingChannels,
+    );
     verifyCompatibleEndpointSandboxSmoke({
       sandboxName,
       provider,
@@ -9142,6 +9260,9 @@ module.exports = {
   setupInference,
   setupMessagingChannels,
   MESSAGING_CHANNELS,
+  getPostOnboardDisabledChannels,
+  getPostOnboardDisableConfigPaths,
+  disableMessagingChannelsAfterOnboard,
   setupNim,
   providerNameToOptionKey,
   readRecordedProvider,

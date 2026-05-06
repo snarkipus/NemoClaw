@@ -29,7 +29,7 @@
 //   — no double-tunnelling.
 
 import http from "node:http";
-import net from "node:net";
+import type { Socket } from "node:net";
 import tls from "node:tls";
 import https from "node:https";
 import { URL } from "node:url";
@@ -90,7 +90,7 @@ interface ReqOpts extends https.RequestOptions {
       function (
         options: TunnelConnectionOptions,
         callback: (err: Error | null, socket?: tls.TLSSocket) => void,
-      ): net.Socket {
+      ): undefined {
       const connectReq = http.request({
         host: proxyHost,
         port: proxyPort,
@@ -101,7 +101,7 @@ interface ReqOpts extends https.RequestOptions {
 
       connectReq.on(
         "connect",
-        (_res: http.IncomingMessage, socket: net.Socket, head: Buffer) => {
+        (_res: http.IncomingMessage, socket: Socket, head: Buffer) => {
           if (_res.statusCode !== 200) {
             socket.destroy();
             callback(
@@ -129,9 +129,9 @@ interface ReqOpts extends https.RequestOptions {
       });
       connectReq.end();
 
-      // createConnection expects a synchronous return; the real socket arrives
-      // via the callback.  Return a placeholder that Node.js will discard.
-      return new net.Socket();
+      // The real socket arrives via callback after CONNECT succeeds; returning
+      // undefined avoids handing callers a placeholder socket that can close early.
+      return undefined;
     },
     );
 

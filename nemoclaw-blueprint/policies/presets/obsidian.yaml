@@ -1,0 +1,20 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+preset:
+  name: obsidian
+  description: "Obsidian Sync access for obsidian-headless"
+
+network_policies:
+  obsidian:
+    name: obsidian
+    endpoints:
+      - host: obsidian.md
+        port: 443
+      - host: api.obsidian.md
+        port: 443
+      - host: sync-44.obsidian.md
+        port: 443
+    binaries:
+      - { path: /usr/local/bin/node }
+      - { path: /usr/bin/node }

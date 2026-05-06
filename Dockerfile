@@ -43,6 +43,44 @@ RUN apt-mark manual procps 2>/dev/null || true \
     fi \
     && ps --version
 
+ARG GH_VERSION=2.92.0
+ARG NEOVIM_VERSION=0.12.2
+ARG NEOVIM_X86_64_SHA256=31cf85945cb600d96cdf69f88bc68bec814acbff50863c5546adef3a1bcef260
+ARG NEOVIM_ARM64_SHA256=f697d4e4582b6e4b5c3c26e76e06ce26efa08ba1768e03fd2733fcc422bb0490
+ARG OBSIDIAN_HEADLESS_VERSION=0.0.8
+ARG QMD_VERSION=2.1.0
+ARG PM2_VERSION=7.0.1
+ARG AGENTMAIL_PYTHON_SDK_VERSION=0.5.0
+
+# Install operator/debug tooling at build time. The running sandbox is policy-
+# gated, lacks systemd, and should not rely on runtime package installs for
+# core maintenance tools.
+# hadolint ignore=DL3059,DL4006
+RUN mkdir -p /etc/apt/keyrings \
+    && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+        -o /etc/apt/keyrings/githubcli-archive-keyring.gpg \
+    && chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg \
+    && printf '%s\n' 'deb [arch=amd64,arm64 signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main' \
+        > /etc/apt/sources.list.d/github-cli.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends \
+        "gh=${GH_VERSION}" \
+    && rm -rf /var/lib/apt/lists/* \
+    && arch="$(dpkg --print-architecture)" \
+    && case "$arch" in \
+        amd64) nvim_arch=x86_64; nvim_sha="${NEOVIM_X86_64_SHA256}" ;; \
+        arm64) nvim_arch=arm64; nvim_sha="${NEOVIM_ARM64_SHA256}" ;; \
+        *) echo "Unsupported Neovim architecture: $arch" >&2; exit 1 ;; \
+    esac \
+    && curl -fsSL "https://github.com/neovim/neovim/releases/download/v${NEOVIM_VERSION}/nvim-linux-${nvim_arch}.tar.gz" \
+        -o /tmp/nvim-linux.tar.gz \
+    && printf '%s  %s\n' "$nvim_sha" /tmp/nvim-linux.tar.gz | sha256sum -c - \
+    && mkdir -p /usr/local/lib/nvim \
+    && tar -xzf /tmp/nvim-linux.tar.gz -C /usr/local/lib/nvim --strip-components=1 \
+    && ln -sf /usr/local/lib/nvim/bin/nvim /usr/local/bin/nvim \
+    && rm -f /tmp/nvim-linux.tar.gz \
+    && gh --version \
+    && nvim --version
 
 # Copy built plugin and blueprint into the sandbox
 COPY --from=builder /opt/nemoclaw/dist/ /opt/nemoclaw/dist/
@@ -53,6 +91,19 @@ COPY nemoclaw-blueprint/ /opt/nemoclaw-blueprint/
 # Install runtime dependencies only (no devDependencies, no build step)
 WORKDIR /opt/nemoclaw
 RUN npm ci --omit=dev
+RUN npm install -g --no-audit --no-fund --no-progress \
+        "obsidian-headless@${OBSIDIAN_HEADLESS_VERSION}" \
+        "@tobilu/qmd@${QMD_VERSION}" \
+        "pm2@${PM2_VERSION}" \
+    && command -v ob >/dev/null \
+    && command -v qmd >/dev/null \
+    && command -v pm2 >/dev/null
+
+# AgentMail baseline uses a pm2-supervised Python REST worker. Pre-install the
+# Python SDK so the fresh sandbox does not depend on runtime pip network access.
+RUN pip3 install --no-cache-dir --break-system-packages \
+        "agentmail==${AGENTMAIL_PYTHON_SDK_VERSION}" \
+    && python3 -c 'from agentmail import AgentMail; print(AgentMail.__name__)'
 
 # Upgrade OpenClaw if the base image is stale.
 #
@@ -81,6 +132,54 @@ RUN set -eu; \
         rm -rf /usr/local/lib/node_modules/openclaw /usr/local/bin/openclaw; \
         npm install -g --no-audit --no-fund --no-progress "openclaw@${MIN_VER}"; \
     fi; \
+    # OpenClaw intentionally does not let the live gateway self-repair bundled
+    # channel dependencies in this managed image. Install Telegram runtime deps
+    # at build time so doctor/channel loading can resolve grammy without
+    # runtime npm. Do not run bare `npm install --prefix "$telegram_dir"`:
+    # OpenClaw 2026.5.x extension manifests can include workspace:* dev deps,
+    # which npm rejects outside the upstream monorepo even with --omit=dev.
+    telegram_dir=/usr/local/lib/node_modules/openclaw/dist/extensions/telegram; \
+    test -e "$telegram_dir/package.json"; \
+    tmp_telegram_deps=/tmp/openclaw-telegram-runtime-deps; \
+    rm -rf "$tmp_telegram_deps"; \
+    mkdir -p "$tmp_telegram_deps"; \
+    npm install --prefix "$tmp_telegram_deps" --omit=dev --ignore-scripts --no-audit --no-fund --no-progress \
+        '@grammyjs/runner@^2.0.3' \
+        '@grammyjs/transformer-throttler@^1.2.1' \
+        'grammy@^1.42.0' \
+        'typebox@1.1.37' \
+        'undici@8.1.0'; \
+    rm -rf "$telegram_dir/node_modules"; \
+    cp -a "$tmp_telegram_deps/node_modules" "$telegram_dir/node_modules"; \
+    rm -rf "$tmp_telegram_deps"; \
+    test -e "$telegram_dir/node_modules/grammy/package.json"; \
+    # Install enabled core/plugin extension runtime deps that OpenClaw's
+    # bundled extension manifests declare with workspace:* dev deps. Installing
+    # explicit runtime packages avoids npm resolving those monorepo-only specs.
+    xai_dir=/usr/local/lib/node_modules/openclaw/dist/extensions/xai; \
+    memory_core_dir=/usr/local/lib/node_modules/openclaw/dist/extensions/memory-core; \
+    test -e "$xai_dir/package.json"; \
+    test -e "$memory_core_dir/package.json"; \
+    tmp_xai_deps=/tmp/openclaw-xai-runtime-deps; \
+    rm -rf "$tmp_xai_deps"; \
+    mkdir -p "$tmp_xai_deps"; \
+    npm install --prefix "$tmp_xai_deps" --omit=dev --ignore-scripts --no-audit --no-fund --no-progress \
+        '@mariozechner/pi-ai@0.71.1' \
+        'typebox@1.1.37'; \
+    rm -rf "$xai_dir/node_modules"; \
+    cp -a "$tmp_xai_deps/node_modules" "$xai_dir/node_modules"; \
+    rm -rf "$tmp_xai_deps"; \
+    test -e "$xai_dir/node_modules/@mariozechner/pi-ai/package.json"; \
+    tmp_memory_core_deps=/tmp/openclaw-memory-core-runtime-deps; \
+    rm -rf "$tmp_memory_core_deps"; \
+    mkdir -p "$tmp_memory_core_deps"; \
+    npm install --prefix "$tmp_memory_core_deps" --omit=dev --ignore-scripts --no-audit --no-fund --no-progress \
+        'chokidar@^5.0.0' \
+        'typebox@1.1.37'; \
+    rm -rf "$memory_core_dir/node_modules"; \
+    cp -a "$tmp_memory_core_deps/node_modules" "$memory_core_dir/node_modules"; \
+    rm -rf "$tmp_memory_core_deps"; \
+    test -e "$memory_core_dir/node_modules/chokidar/package.json"; \
     # Pre-install the codex-acp package so the embedded ACPx runtime can
     # call the local binary instead of `npx @zed-industries/codex-acp`.
     # The sandbox's L7 proxy denies @zed-industries/* package URLs
@@ -149,7 +248,6 @@ RUN set -eu; \
 #
 # Both patches fail-close: if grep finds no targets, the build aborts so
 # the next maintainer reviewing an OPENCLAW_VERSION bump knows to revisit.
-COPY scripts/rcf_patch.py /usr/local/lib/nemoclaw/rcf_patch.py
 # hadolint ignore=SC2016,DL3059,DL4006
 RUN set -eu; \
     OC_DIST=/usr/local/lib/node_modules/openclaw/dist; \
@@ -181,39 +279,7 @@ RUN set -eu; \
     sed -i 's/const baseLstat = await fs\.lstat(params\.installBaseDir)/const baseLstat = await fs.stat(params.installBaseDir)/' "$ipd_file"; \
     sed -i 's/baseLstat\.isSymbolicLink()/false \/* nemoclaw: symlink check disabled, realpath guards containment *\//' "$ipd_file"; \
     if grep -q 'fs\.lstat(params\.installBaseDir)' "$ipd_file"; then echo "ERROR: Patch 3b (install-package-dir) left lstat in assertInstallBaseStable" >&2; exit 1; fi; \
-    # --- Patch 4: graceful EACCES in replaceConfigFile for sandbox (#2254) --- \
-    # Plugin install persists metadata via replaceConfigFile. In the sandbox, \
-    # openclaw.json is immutable (444 root:root) by design.  OpenClaw 2026.4.24 \
-    # restructured config writes: replaceConfigFile now first attempts a \
-    # single-key include-file mutation (tryWriteSingleTopLevelIncludeMutation), \
-    # falling back to writeConfigFile for the full config.  Both paths can hit \
-    # EACCES in the read-only sandbox tree.  This patch wraps the entire \
-    # write block in a try/catch that catches EACCES when OPENSHELL_SANDBOX=1 \
-    # and emits a warning instead of crashing.  Plugins still load via \
-    # auto-discovery from the extensions directory. \
-    rcf_file="$(grep -RIlE --include='*.js' 'async function replaceConfigFile\(params\)' "$OC_DIST" | head -n 1)"; \
-    test -n "$rcf_file" || { echo "ERROR: replaceConfigFile function not found in OpenClaw dist" >&2; exit 1; }; \
-    python3 /usr/local/lib/nemoclaw/rcf_patch.py "$rcf_file"; \
-    grep -REq --include='*.js' 'OPENSHELL_SANDBOX.*EACCES' "$rcf_file" || { echo "ERROR: Patch 4 (replaceConfigFile EACCES) not applied" >&2; exit 1; }; \
-    # --- Patch 5: bump default WS handshake timeout 10s -> 60s (#2484) --- \
-    # OpenClaw's WS connect handshake has a hard-coded 10s timeout on both \
-    # client and server. Server-side connect-handler processing can exceed \
-    # 10s under load (multiple concurrent connects on slow CI infra), \
-    # causing `openclaw agent --json` to fail with "gateway timeout after \
-    # 10000ms" and TC-SBX-02 to hit its 90s SSH timeout. \
-    # \
-    # Both env vars (OPENCLAW_HANDSHAKE_TIMEOUT_MS, \
-    # OPENCLAW_CONNECT_CHALLENGE_TIMEOUT_MS) are clamped at the same \
-    # DEFAULT_PREAUTH_HANDSHAKE_TIMEOUT_MS constant, so we patch the \
-    # constant itself.  Affects both client.js (used by openclaw CLI) and \
-    # server.impl.js (gateway side). \
-    # \
-    # Removal criteria: drop when openclaw fixes the underlying connect \
-    # latency, or exposes the timeout as an unbounded env override. \
-    hto_files="$(grep -RIlE --include='*.js' 'DEFAULT_PREAUTH_HANDSHAKE_TIMEOUT_MS = 1e4' "$OC_DIST")"; \
-    test -n "$hto_files" || { echo "ERROR: handshake-timeout constant not found" >&2; exit 1; }; \
-    printf '%s\n' "$hto_files" | xargs sed -i -E 's|DEFAULT_PREAUTH_HANDSHAKE_TIMEOUT_MS = 1e4|DEFAULT_PREAUTH_HANDSHAKE_TIMEOUT_MS = 6e4|g'; \
-    if grep -REq --include='*.js' 'DEFAULT_PREAUTH_HANDSHAKE_TIMEOUT_MS = 1e4' "$OC_DIST"; then echo "ERROR: Patch 5 left a 1e4 constant" >&2; exit 1; fi
+    true
 
 # Set up blueprint for local resolution.
 # Blueprints are immutable at runtime; DAC protection (root ownership) is applied
@@ -352,6 +418,11 @@ RUN python3 /usr/local/lib/nemoclaw/generate-openclaw-config.py
 RUN (openclaw doctor --fix > /dev/null 2>&1 || true) \
     && (openclaw plugins install /opt/nemoclaw > /dev/null 2>&1 || true) \
     && if [ -d /sandbox/.openclaw/plugin-runtime-deps ]; then \
+        telegram_dir="$(find /sandbox/.openclaw/plugin-runtime-deps -path '*/dist/extensions/telegram/package.json' -print -quit | xargs -r dirname)"; \
+        if [ -n "$telegram_dir" ]; then \
+            npm install --prefix "$telegram_dir" --omit=dev --ignore-scripts --no-audit --no-fund --no-progress; \
+            test -e "$telegram_dir/node_modules/grammy/package.json"; \
+        fi; \
         find /sandbox/.openclaw/plugin-runtime-deps -type f \( \
             -name '*.d.ts' -o -name '*.d.mts' -o -name '*.d.cts' -o \
             -name '*.map' -o -name '*.tsbuildinfo' \

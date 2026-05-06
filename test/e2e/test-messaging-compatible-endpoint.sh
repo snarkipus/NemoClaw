@@ -343,8 +343,6 @@ providers = cfg.get("models", {}).get("providers", {})
 errors = []
 if "deepinfra" in providers:
     errors.append("direct deepinfra provider is present")
-if sorted(providers.keys()) != ["inference"]:
-    errors.append("provider keys are %r" % sorted(providers.keys()))
 inference = providers.get("inference") if isinstance(providers, dict) else None
 if not isinstance(inference, dict):
     errors.append("models.providers.inference is missing")
@@ -354,8 +352,21 @@ else:
     if inference.get("apiKey") != "unused":
         errors.append("inference apiKey is not the non-secret placeholder")
 primary = cfg.get("agents", {}).get("defaults", {}).get("model", {}).get("primary")
-if primary != "inference/" + model:
+if not isinstance(primary, str) or "/" not in primary:
     errors.append("primary model is %r" % primary)
+else:
+    expected_suffix = "/" + model
+    if not primary.endswith(expected_suffix):
+        errors.append("primary model is %r" % primary)
+    primary_provider = primary.split("/", 1)[0]
+    primary_cfg = providers.get(primary_provider) if isinstance(providers, dict) else None
+    if not isinstance(primary_cfg, dict):
+        errors.append("models.providers.%s is missing" % primary_provider)
+    else:
+        if primary_cfg.get("baseUrl") != "https://inference.local/v1":
+            errors.append("%s baseUrl is %r" % (primary_provider, primary_cfg.get("baseUrl")))
+        if primary_cfg.get("apiKey") != "unused":
+            errors.append("%s apiKey is not the non-secret placeholder" % primary_provider)
 if not cfg.get("channels", {}).get("telegram"):
     errors.append("telegram channel config missing")
 print(json.dumps({

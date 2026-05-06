@@ -523,27 +523,25 @@ describe("nemoclaw-start configure guard behavior", () => {
     );
   }
 
-  it("emits a proxy-env guard that blocks mutating OpenClaw commands and passes read-only commands through", () => {
+  it("emits a proxy-env guard that allows config mutation but blocks unsafe commands", () => {
     const setup = writeProxyEnvWithGuard();
     try {
       const envFile = fs.readFileSync(setup.proxyEnv, "utf-8");
       expect(envFile).toContain("nemoclaw-configure-guard begin");
       expect(envFile).toContain("nemoclaw-configure-guard end");
 
-      const configure = runGuardedOpenclaw(setup, ["configure"]);
-      expect(configure.status).toBe(1);
-      expect(configure.stderr).toContain("cannot modify config inside the sandbox");
-      expect(configure.stderr).toContain("nemoclaw onboard --resume");
-
-      const configSet = runGuardedOpenclaw(setup, ["config", "set", "foo", "bar"]);
-      expect(configSet.status).toBe(1);
-      expect(configSet.stderr).toContain("openclaw config set");
-      expect(configSet.stderr).toContain("nemoclaw onboard --resume");
+      expect(runGuardedOpenclaw(setup, ["configure"]).status).toBe(0);
+      expect(runGuardedOpenclaw(setup, ["config", "set", "foo", "bar"]).status).toBe(0);
+      expect(runGuardedOpenclaw(setup, ["config", "unset", "foo"]).status).toBe(0);
 
       const channelsAdd = runGuardedOpenclaw(setup, ["channels", "add", "slack"]);
       expect(channelsAdd.status).toBe(1);
       expect(channelsAdd.stderr).toContain("openclaw channels add");
       expect(channelsAdd.stderr).toContain("nemoclaw <sandbox> channels add");
+
+      const channelsLogin = runGuardedOpenclaw(setup, ["channels", "login", "--channel", "slack"]);
+      expect(channelsLogin.status).toBe(1);
+      expect(channelsLogin.stderr).toContain("openclaw channels login");
 
       const localAgent = runGuardedOpenclaw(setup, ["agent", "--local"]);
       expect(localAgent.status).toBe(1);
@@ -553,9 +551,16 @@ describe("nemoclaw-start configure guard behavior", () => {
       expect(runGuardedOpenclaw(setup, ["agent", "--agent", "main", "-m", "hello"]).status).toBe(0);
       expect(runGuardedOpenclaw(setup, ["config", "get", "foo"]).status).toBe(0);
       expect(runGuardedOpenclaw(setup, ["channels", "list"]).status).toBe(0);
+      expect(runGuardedOpenclaw(setup, ["channels", "status", "--deep"]).status).toBe(0);
+      expect(runGuardedOpenclaw(setup, ["channels", "logs"]).status).toBe(0);
+      expect(fs.readFileSync(setup.commandLog, "utf-8")).toContain("configure");
+      expect(fs.readFileSync(setup.commandLog, "utf-8")).toContain("config set foo bar");
+      expect(fs.readFileSync(setup.commandLog, "utf-8")).toContain("config unset foo");
       expect(fs.readFileSync(setup.commandLog, "utf-8")).toContain("agent --agent main -m hello");
       expect(fs.readFileSync(setup.commandLog, "utf-8")).toContain("config get foo");
       expect(fs.readFileSync(setup.commandLog, "utf-8")).toContain("channels list");
+      expect(fs.readFileSync(setup.commandLog, "utf-8")).toContain("channels status --deep");
+      expect(fs.readFileSync(setup.commandLog, "utf-8")).toContain("channels logs");
     } finally {
       fs.rmSync(setup.tmpDir, { recursive: true, force: true });
     }
@@ -1356,6 +1361,39 @@ describe("NC-2227-01: legacy migration behavior", () => {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
   });
+
+  it("seeds default workspace templates without BOOTSTRAP.md", () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-workspace-templates-"));
+    const configDir = path.join(tmpDir, ".openclaw");
+    const templateDir = path.join(tmpDir, "templates");
+    const script = path.join(tmpDir, "seed.sh");
+    fs.mkdirSync(path.join(configDir, "workspace"), { recursive: true });
+    fs.mkdirSync(templateDir, { recursive: true });
+    for (const name of ["AGENTS.md", "SOUL.md", "TOOLS.md", "IDENTITY.md", "USER.md", "HEARTBEAT.md", "BOOTSTRAP.md"]) {
+      fs.writeFileSync(path.join(templateDir, name), `---\ntitle: ${name}\n---\n# ${name}\n`);
+    }
+    const body = [
+      "#!/usr/bin/env bash",
+      "set -euo pipefail",
+      'chown_tree_no_symlink_follow() { :; }',
+      extractShellFunctionFromSource(src, "seed_workspace_templates")
+        .replaceAll('/sandbox/.openclaw', configDir)
+        .replaceAll('/usr/local/lib/node_modules/openclaw/docs/reference/templates', templateDir),
+      "seed_workspace_templates",
+    ].join("\n");
+    fs.writeFileSync(script, body, { mode: 0o700 });
+
+    try {
+      const result = spawnSync("bash", [script], { encoding: "utf-8", timeout: 5000 });
+      expect(result.status).toBe(0);
+      for (const name of ["AGENTS.md", "SOUL.md", "TOOLS.md", "IDENTITY.md", "USER.md", "HEARTBEAT.md"]) {
+        expect(fs.readFileSync(path.join(configDir, "workspace", name), "utf-8")).toBe(`# ${name}\n`);
+      }
+      expect(fs.existsSync(path.join(configDir, "workspace", "BOOTSTRAP.md"))).toBe(false);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("Slack token rewriter (#2085)", () => {
@@ -1533,6 +1571,7 @@ describe("Telegram diagnostics (#2766)", () => {
         'verify_no_slack_secrets_on_disk() { :; }',
         'write_auth_profile() { :; }',
         'harden_auth_profiles() { :; }',
+        'seed_workspace_templates() { :; }',
         'chown() { :; }',
         'chown_tree_no_symlink_follow() { :; }',
         'start_persistent_gateway_log_mirror() { :; }',
