@@ -41,6 +41,19 @@ function extractRuntimeShellEnvShimSnippet() {
   return `${src.slice(start, end).trimEnd()}\nensure_runtime_shell_env_shim`;
 }
 
+function extractSandboxTimezoneSnippet() {
+  const src = readFileSync(NEMOCLAW_START_SCRIPT, "utf-8");
+  const start = src.indexOf("# ── Sandbox timezone normalization");
+  const end = src.indexOf("# ── Config integrity check", start);
+  if (start === -1 || end === -1 || end <= start) {
+    throw new Error(
+      "Failed to extract sandbox timezone helpers from scripts/nemoclaw-start.sh — " +
+        "the timezone setup block may have been moved or renamed",
+    );
+  }
+  return src.slice(start, end).trimEnd();
+}
+
 describe("service environment", () => {
   describe("start-services behavior", () => {
     const scriptPath = join(import.meta.dirname, "../scripts/start-services.sh");
@@ -196,6 +209,40 @@ describe("service environment", () => {
   describe("GIT_SSL_CAINFO for proxy CA trust (issue #2270)", () => {
     const sandboxInitSource = `source ${JSON.stringify(join(import.meta.dirname, "../scripts/lib/sandbox-init.sh"))}`;
 
+    it("entrypoint defaults Node proxy mode and OpenShell CA trust", () => {
+      const scriptPath = join(import.meta.dirname, "../scripts/nemoclaw-start.sh");
+      const src = readFileSync(scriptPath, "utf-8");
+      const start = src.indexOf("# Node.js proxy and TLS trust defaults");
+      const end = src.indexOf("# Git TLS CA bundle fix", start);
+      if (start === -1 || end === -1 || end <= start) {
+        throw new Error("Failed to extract Node proxy CA trust block");
+      }
+
+      const tmpFile = join(tmpdir(), `nemoclaw-node-ca-entrypoint-${process.pid}.sh`);
+      try {
+        writeFileSync(
+          tmpFile,
+          [
+            "#!/usr/bin/env bash",
+            "set -euo pipefail",
+            "unset NODE_USE_ENV_PROXY NODE_EXTRA_CA_CERTS",
+            src.slice(start, end),
+            'printf "%s\\n%s" "$NODE_USE_ENV_PROXY" "$NODE_EXTRA_CA_CERTS"',
+          ].join("\n"),
+          { mode: 0o700 },
+        );
+
+        const output = execFileSync("bash", [tmpFile], { encoding: "utf-8" });
+        expect(output).toBe("1\n/etc/openshell-tls/openshell-ca.pem");
+      } finally {
+        try {
+          unlinkSync(tmpFile);
+        } catch {
+          /* ignore */
+        }
+      }
+    });
+
     it("entrypoint exports GIT_SSL_CAINFO when SSL_CERT_FILE points to a real file", () => {
       const scriptPath = join(import.meta.dirname, "../scripts/nemoclaw-start.sh");
       const src = readFileSync(scriptPath, "utf-8");
@@ -278,6 +325,10 @@ describe("service environment", () => {
         const envFile = readFileSync(join(fakeDataDir, "proxy-env.sh"), "utf-8");
         expect(envFile).toContain("GIT_SSL_CAINFO");
         expect(envFile).toContain(fakeCaBundle);
+        expect(envFile).toContain('export NODE_USE_ENV_PROXY="1"');
+        expect(envFile).toContain(
+          'export NODE_EXTRA_CA_CERTS="/etc/openshell-tls/openshell-ca.pem"',
+        );
       } finally {
         try {
           execFileSync("rm", ["-rf", fakeDataDir, tmpFile]);
@@ -318,6 +369,87 @@ describe("service environment", () => {
       } finally {
         try {
           execFileSync("rm", ["-rf", fakeDataDir, tmpFile]);
+        } catch {
+          /* ignore */
+        }
+      }
+    });
+  });
+
+  describe("sandbox timezone normalization", () => {
+    it("exports a valid configured userTimezone for the gateway process", () => {
+      const fakeRoot = mkdtempSync(join(tmpdir(), "nemoclaw-tz-valid-"));
+      const fakeConfigDir = join(fakeRoot, ".openclaw");
+      const tmpFile = join(tmpdir(), `nemoclaw-tz-valid-${process.pid}.sh`);
+      try {
+        execFileSync("mkdir", ["-p", fakeConfigDir]);
+        writeFileSync(
+          join(fakeConfigDir, "openclaw.json"),
+          JSON.stringify({ agents: { defaults: { userTimezone: "America/Los_Angeles" } } }),
+        );
+        const wrapper = [
+          "#!/usr/bin/env bash",
+          "set -euo pipefail",
+          extractSandboxTimezoneSnippet()
+            .replaceAll("/sandbox/.openclaw/openclaw.json", join(fakeConfigDir, "openclaw.json"))
+            .replaceAll("/etc/timezone", join(fakeRoot, "timezone")),
+          "configure_sandbox_timezone",
+          'printf "%s" "$TZ"',
+        ].join("\n");
+        writeFileSync(tmpFile, wrapper, { mode: 0o700 });
+
+        const output = execFileSync("bash", [tmpFile], { encoding: "utf-8" });
+        expect(output).toBe("America/Los_Angeles");
+      } finally {
+        try {
+          unlinkSync(tmpFile);
+        } catch {
+          /* ignore */
+        }
+        try {
+          execFileSync("rm", ["-rf", fakeRoot]);
+        } catch {
+          /* ignore */
+        }
+      }
+    });
+
+    it("normalizes America/Miami and writes TZ to proxy-env.sh", () => {
+      const fakeDataDir = mkdtempSync(join(tmpdir(), "nemoclaw-tz-proxy-"));
+      const tmpFile = join(tmpdir(), `nemoclaw-tz-proxy-${process.pid}.sh`);
+      try {
+        const sandboxInitSource = `source ${JSON.stringify(join(import.meta.dirname, "../scripts/lib/sandbox-init.sh"))}`;
+        const persistBlock = extractRuntimeShellEnvSnippet();
+        const wrapper = [
+          "#!/usr/bin/env bash",
+          "set -euo pipefail",
+          sandboxInitSource,
+          "_TOOL_REDIRECTS=()",
+          'PROXY_HOST="10.200.0.1"',
+          'PROXY_PORT="3128"',
+          '_PROXY_URL="http://${PROXY_HOST}:${PROXY_PORT}"',
+          '_NO_PROXY_VAL="localhost,127.0.0.1,::1,${PROXY_HOST}"',
+          extractSandboxTimezoneSnippet(),
+          'TZ="$(normalize_timezone_candidate America/Miami)"',
+          "export TZ",
+          "set +u  # array expansion safe on macOS bash",
+          persistBlock
+            .trimEnd()
+            .replaceAll("/tmp/nemoclaw-proxy-env.sh", `${fakeDataDir}/proxy-env.sh`),
+        ].join("\n");
+        writeFileSync(tmpFile, wrapper, { mode: 0o700 });
+        execFileSync("bash", [tmpFile], { encoding: "utf-8" });
+
+        const envFile = readFileSync(join(fakeDataDir, "proxy-env.sh"), "utf-8");
+        expect(envFile).toContain("export TZ=America/New_York");
+      } finally {
+        try {
+          unlinkSync(tmpFile);
+        } catch {
+          /* ignore */
+        }
+        try {
+          execFileSync("rm", ["-rf", fakeDataDir]);
         } catch {
           /* ignore */
         }

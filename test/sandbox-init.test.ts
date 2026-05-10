@@ -492,6 +492,25 @@ EOF
       `);
       expect(stdout).toContain("EXIT_0");
     });
+
+    it("cleanup_children_on_exit preserves status and stops child helpers", () => {
+      const { stdout } = runWithLib(`
+        set +e
+        sleep 30 & child=$!
+        SANDBOX_CHILD_PIDS=("$child")
+        exit() { echo "EXIT_$1"; }
+        false
+        cleanup_children_on_exit
+        if kill -0 "$child" 2>/dev/null; then
+          echo "CHILD_ALIVE"
+          kill "$child" 2>/dev/null || true
+        else
+          echo "CHILD_STOPPED"
+        fi
+      `);
+      expect(stdout).toContain("EXIT_1");
+      expect(stdout).not.toContain("CHILD_ALIVE");
+    });
   });
 
   describe("double-source guard", () => {

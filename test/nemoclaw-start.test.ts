@@ -263,6 +263,7 @@ describe("nemoclaw-start non-root fallback", () => {
       'normalize_mutable_config_perms() { :; }',
       'apply_model_override() { :; }',
       'apply_cors_override() { :; }',
+      'configure_sandbox_timezone() { :; }',
       'export_gateway_token() { :; }',
       'write_runtime_shell_env() { :; }',
       'ensure_runtime_shell_env_shim() { :; }',
@@ -272,6 +273,7 @@ describe("nemoclaw-start non-root fallback", () => {
       'install_slack_token_rewriter() { echo "SHOULD_NOT_INSTALL"; exit 72; }',
       'install_slack_channel_guard() { echo "SHOULD_NOT_INSTALL"; exit 73; }',
       'verify_no_slack_secrets_on_disk() { echo "SHOULD_NOT_VERIFY"; exit 74; }',
+      'cleanup_children_on_exit() { :; }',
       '_SANDBOX_HOME=/sandbox',
       "NEMOCLAW_CMD=(bash -c 'echo EXPLICIT_COMMAND; exit 23')",
       nonRootFallbackBlock(src),
@@ -482,6 +484,16 @@ describe("nemoclaw-start configure guard behavior", () => {
       `#!/usr/bin/env bash\nprintf '%s\\n' "$*" >> ${JSON.stringify(commandLog)}\nexit 0\n`,
       { mode: 0o755 },
     );
+    fs.writeFileSync(
+      path.join(fakeBin, "python3"),
+      `#!/usr/bin/env bash\nprintf 'python3 %s\\n' "$*" >> ${JSON.stringify(commandLog)}\ncat >> ${JSON.stringify(commandLog)}\nexit "${"${MOCK_PYTHON_STATUS:-0}"}"\n`,
+      { mode: 0o755 },
+    );
+    fs.writeFileSync(
+      path.join(fakeBin, "rm"),
+      `#!/usr/bin/env bash\nprintf 'rm %s\\n' "$*" >> ${JSON.stringify(commandLog)}\nexit 0\n`,
+      { mode: 0o755 },
+    );
     const runtimeBlock = `${runtimeShellEnvBlock(src)}\nwrite_runtime_shell_env`.replaceAll(
       "/tmp/nemoclaw-proxy-env.sh",
       proxyEnv,
@@ -532,22 +544,16 @@ describe("nemoclaw-start configure guard behavior", () => {
     );
   }
 
-  it("emits a proxy-env guard that blocks mutating OpenClaw commands and passes read-only commands through", () => {
+  it("emits a proxy-env guard that allows config commands while blocking unsafe commands", () => {
     const setup = writeProxyEnvWithGuard();
     try {
       const envFile = fs.readFileSync(setup.proxyEnv, "utf-8");
       expect(envFile).toContain("nemoclaw-configure-guard begin");
       expect(envFile).toContain("nemoclaw-configure-guard end");
-
-      const configure = runGuardedOpenclaw(setup, ["configure"]);
-      expect(configure.status).toBe(1);
-      expect(configure.stderr).toContain("cannot modify config inside the sandbox");
-      expect(configure.stderr).toContain("nemoclaw onboard --resume");
+      expect(envFile).toContain("export NEMOCLAW_START_RESTART_PATH=/usr/local/bin/nemoclaw-start");
 
       const configSet = runGuardedOpenclaw(setup, ["config", "set", "foo", "bar"]);
-      expect(configSet.status).toBe(1);
-      expect(configSet.stderr).toContain("openclaw config set");
-      expect(configSet.stderr).toContain("nemoclaw onboard --resume");
+      expect(configSet.status).toBe(0);
 
       const channelsAdd = runGuardedOpenclaw(setup, ["channels", "add", "slack"]);
       expect(channelsAdd.status).toBe(1);
@@ -559,12 +565,29 @@ describe("nemoclaw-start configure guard behavior", () => {
       expect(localAgent.stderr).toContain("--local");
       expect(localAgent.stderr).toContain("openclaw agent --agent main");
 
+      expect(runGuardedOpenclaw(setup, ["configure"]).status).toBe(0);
       expect(runGuardedOpenclaw(setup, ["agent", "--agent", "main", "-m", "hello"]).status).toBe(0);
       expect(runGuardedOpenclaw(setup, ["config", "get", "foo"]).status).toBe(0);
       expect(runGuardedOpenclaw(setup, ["channels", "list"]).status).toBe(0);
-      expect(fs.readFileSync(setup.commandLog, "utf-8")).toContain("agent --agent main -m hello");
-      expect(fs.readFileSync(setup.commandLog, "utf-8")).toContain("config get foo");
-      expect(fs.readFileSync(setup.commandLog, "utf-8")).toContain("channels list");
+      const gatewayRestart = runGuardedOpenclaw(setup, ["gateway", "restart"]);
+      expect(gatewayRestart.status).toBe(0);
+      expect(gatewayRestart.stderr).toContain("restarting the sandbox-local OpenClaw gateway");
+
+      const gatewayRestartExtra = runGuardedOpenclaw(setup, ["gateway", "restart", "--now"]);
+      expect(gatewayRestartExtra.status).toBe(2);
+      expect(gatewayRestartExtra.stderr).toContain("does not accept extra arguments");
+
+      const commandLog = fs.readFileSync(setup.commandLog, "utf-8");
+      expect(commandLog).toContain("configure");
+      expect(commandLog).toContain("config set foo bar");
+      expect(commandLog).toContain("agent --agent main -m hello");
+      expect(commandLog).toContain("config get foo");
+      expect(commandLog).toContain("channels list");
+      expect(commandLog).toContain("rm -f /tmp/nemoclaw-start.log");
+      expect(commandLog).toContain('restart_cmd = os.environ.get("NEMOCLAW_START_RESTART_PATH"');
+      expect(commandLog).toContain('["nohup", restart_cmd]');
+      expect(commandLog).toContain("NemoClaw: gateway restart completed");
+      expect(commandLog.split("\n")).not.toContain("gateway restart");
     } finally {
       fs.rmSync(setup.tmpDir, { recursive: true, force: true });
     }
@@ -1152,6 +1175,7 @@ describe("nemoclaw-start gateway launch signal handling", () => {
         "start_persistent_gateway_log_mirror() { sleep 30 & GATEWAY_LOG_PERSIST_PID=$!; }",
         "start_auto_pair() { sleep 30 & AUTO_PAIR_PID=$!; }",
         "cleanup_on_signal() { :; }",
+        "cleanup_children_on_exit() { :; }",
         launchBlock(kind, gatewayLog),
         kind === "root"
           ? `for _ in ${waitForLaunchLogIterations}; do [ -s ${JSON.stringify(gosuLog)} ] && [ -s ${JSON.stringify(openclawLog)} ] && break; sleep 0.1; done`
@@ -1392,6 +1416,51 @@ describe("NC-2227-01: legacy migration behavior", () => {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
   });
+
+  it("seeds default workspace templates without BOOTSTRAP.md", () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-workspace-templates-"));
+    const configDir = path.join(tmpDir, ".openclaw");
+    const templateDir = path.join(tmpDir, "templates");
+    const script = path.join(tmpDir, "seed.sh");
+    fs.mkdirSync(path.join(configDir, "workspace"), { recursive: true });
+    fs.mkdirSync(path.join(configDir, "workspace-extra"), { recursive: true });
+    fs.mkdirSync(templateDir, { recursive: true });
+    for (const name of [
+      "AGENTS.md",
+      "SOUL.md",
+      "TOOLS.md",
+      "IDENTITY.md",
+      "USER.md",
+      "HEARTBEAT.md",
+      "BOOTSTRAP.md",
+    ]) {
+      fs.writeFileSync(path.join(templateDir, name), `---\ntitle: ${name}\n---\n${name} body\n`);
+    }
+
+    const body = [
+      "#!/usr/bin/env bash",
+      "set -euo pipefail",
+      "chown_tree_no_symlink_follow() { :; }",
+      extractShellFunctionFromSource(src, "seed_workspace_templates")
+        .replaceAll("/sandbox/.openclaw", configDir)
+        .replaceAll("/usr/local/lib/node_modules/openclaw/docs/reference/templates", templateDir),
+      "seed_workspace_templates",
+    ].join("\n");
+    fs.writeFileSync(script, body, { mode: 0o700 });
+
+    try {
+      const result = spawnSync("bash", [script], { encoding: "utf-8", timeout: 5000 });
+      expect(result.status).toBe(0);
+      for (const workspace of ["workspace", "workspace-extra"]) {
+        for (const name of ["AGENTS.md", "SOUL.md", "TOOLS.md", "IDENTITY.md", "USER.md", "HEARTBEAT.md"]) {
+          expect(fs.readFileSync(path.join(configDir, workspace, name), "utf-8")).toBe(`${name} body\n`);
+        }
+        expect(fs.existsSync(path.join(configDir, workspace, "BOOTSTRAP.md"))).toBe(false);
+      }
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("Slack token rewriter (#2085)", () => {
@@ -1567,6 +1636,7 @@ describe("Telegram diagnostics (#2766)", () => {
         'normalize_mutable_config_perms() { echo "ORDER:normalize"; }',
         'apply_model_override() { :; }',
         'apply_cors_override() { :; }',
+        'configure_sandbox_timezone() { :; }',
         'export_gateway_token() { :; }',
         'write_runtime_shell_env() { :; }',
         'ensure_runtime_shell_env_shim() { :; }',
@@ -1579,6 +1649,7 @@ describe("Telegram diagnostics (#2766)", () => {
         'harden_auth_profiles() { :; }',
         'chown() { :; }',
         'chown_tree_no_symlink_follow() { :; }',
+        'seed_workspace_templates() { :; }',
         'start_persistent_gateway_log_mirror() { :; }',
         'gosu() { shift; "$@"; }',
         'validate_tmp_permissions() { printf "VALIDATE:%s\\n" "$*"; }',

@@ -357,6 +357,8 @@ cleanup_on_signal() {
   echo "[gateway] received signal, forwarding to children..." >&2
   local primary_status=0
 
+  trap - EXIT
+
   # ${arr[@]+...} guard prevents "unbound variable" under set -u when
   # SANDBOX_CHILD_PIDS is empty or unset (bash 3.x / macOS compat).
   local _pids=()
@@ -378,6 +380,29 @@ cleanup_on_signal() {
   done
 
   exit "$primary_status"
+}
+
+# Clean up background helpers when the launcher exits for any reason. This is
+# especially important for manual `nemoclaw-start` runs: if the gateway exits
+# quickly because another gateway already owns the port, the log tail/mirror
+# helpers would otherwise survive as PPID 1 noise.
+cleanup_children_on_exit() {
+  local status=$?
+  trap - EXIT
+
+  local _pids=()
+  # shellcheck disable=SC2206
+  _pids=(${SANDBOX_CHILD_PIDS[@]+"${SANDBOX_CHILD_PIDS[@]}"})
+
+  for pid in "${_pids[@]+"${_pids[@]}"}"; do
+    kill -TERM "$pid" 2>/dev/null || true
+  done
+
+  for pid in "${_pids[@]+"${_pids[@]}"}"; do
+    wait "$pid" 2>/dev/null || true
+  done
+
+  exit "$status"
 }
 
 # ── Symlink validation ───────────────────────────────────────────

@@ -35,6 +35,7 @@ set -euo pipefail
 # SECURITY: Lock down PATH before any commands run so an injected PATH
 # cannot resolve id/chown/chmod/tee from an attacker-controlled location.
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+export OPENCLAW_HANDSHAKE_TIMEOUT_MS="${OPENCLAW_HANDSHAKE_TIMEOUT_MS:-60000}"
 
 # ── Early stderr/stdout capture ──────────────────────────────────
 # Capture all entrypoint output to /tmp/nemoclaw-start.log so that if
@@ -66,6 +67,11 @@ if [ ! -f "$_SANDBOX_INIT" ]; then
 fi
 # shellcheck source=scripts/lib/sandbox-init.sh
 source "$_SANDBOX_INIT"
+
+_NEMOCLAW_START_PATH="/usr/local/bin/nemoclaw-start"
+if [ ! -x "$_NEMOCLAW_START_PATH" ]; then
+  _NEMOCLAW_START_PATH="$(command -v nemoclaw-start 2>/dev/null || printf '%s' /usr/local/bin/nemoclaw-start)"
+fi
 
 # Harden: limit process count to prevent fork bombs (ref: #809)
 # Best-effort: some container runtimes (e.g., brev) restrict ulimit
@@ -198,6 +204,75 @@ fi
 PUBLIC_PORT="$_DASHBOARD_PORT"
 OPENCLAW="$(command -v openclaw)" # Resolve once, use absolute path everywhere
 _SANDBOX_HOME="/sandbox"          # Home dir for the sandbox user (useradd -d /sandbox in Dockerfile.base)
+
+# ── Sandbox timezone normalization ───────────────────────────────
+# OpenClaw's model-facing current-time resolver falls back to the Node process
+# timezone when the configured userTimezone is invalid.  Keep the gateway and
+# connect shells on the same valid TZ so shell, Python, Node, and OpenClaw agree.
+is_valid_iana_timezone() {
+  local tz="${1:-}"
+  [ -n "$tz" ] || return 1
+  case "$tz" in
+    *[!A-Za-z0-9_+./-]* | */../* | ../* | */.. | /*) return 1 ;;
+  esac
+  node - "$tz" <<'NODE' >/dev/null 2>&1
+const tz = process.argv[2];
+try {
+  new Intl.DateTimeFormat("en-US", { timeZone: tz }).format(new Date());
+} catch {
+  process.exit(1);
+}
+NODE
+}
+
+normalize_timezone_candidate() {
+  local tz="${1:-}"
+  tz="$(printf '%s' "$tz" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+  # Node Intl in the target runtime rejects this alias; align with the host's
+  # Eastern timezone behavior observed during integration-ops-t1kc.
+  if [ "$tz" = "America/Miami" ]; then
+    tz="America/New_York"
+  fi
+  if is_valid_iana_timezone "$tz"; then
+    printf '%s\n' "$tz"
+    return 0
+  fi
+  return 1
+}
+
+read_configured_timezone() {
+  local config_file="${1:-/sandbox/.openclaw/openclaw.json}"
+  [ -f "$config_file" ] || return 1
+  node - "$config_file" <<'NODE' 2>/dev/null || true
+const fs = require("fs");
+const configPath = process.argv[2];
+const cfg = JSON.parse(fs.readFileSync(configPath, "utf8"));
+for (const value of [
+  cfg?.agents?.defaults?.userTimezone,
+  cfg?.userTimezone,
+  cfg?.timezone,
+]) {
+  if (typeof value === "string" && value.trim()) {
+    console.log(value.trim());
+    break;
+  }
+}
+NODE
+}
+
+configure_sandbox_timezone() {
+  local configured_tz resolved_tz fallback_tz
+  configured_tz="$(read_configured_timezone /sandbox/.openclaw/openclaw.json)"
+
+  for fallback_tz in "$configured_tz" "${NEMOCLAW_HOST_TZ:-}" "${TZ:-}" "$(cat /etc/timezone 2>/dev/null || true)" UTC; do
+    if resolved_tz="$(normalize_timezone_candidate "$fallback_tz")"; then
+      export TZ="$resolved_tz"
+      return 0
+    fi
+  done
+
+  export TZ=UTC
+}
 
 # ── Config integrity check (delegates to shared library) ────────
 # verify_config_integrity_if_locked is provided by sandbox-init.sh. OpenClaw
@@ -913,6 +988,13 @@ export http_proxy="$_PROXY_URL"
 export https_proxy="$_PROXY_URL"
 export no_proxy="$_NO_PROXY_VAL"
 
+# Node.js proxy and TLS trust defaults for OpenShell's local inference route.
+# OpenClaw's Node providers call https://inference.local/v1 through the
+# OpenShell L7 proxy.  Force Node's built-in proxy support on and teach Node to
+# trust the Sandbox CA used for proxy TLS interception.
+export NODE_USE_ENV_PROXY="${NODE_USE_ENV_PROXY:-1}"
+export NODE_EXTRA_CA_CERTS="${NODE_EXTRA_CA_CERTS:-/etc/openshell-tls/openshell-ca.pem}"
+
 # Git TLS CA bundle fix (NemoClaw#2270).
 # OpenShell's L7 proxy does MITM TLS termination and re-signs with its own CA.
 # OpenShell injects SSL_CERT_FILE and CURL_CA_BUNDLE pointing at the CA bundle,
@@ -1071,43 +1153,130 @@ export NO_PROXY="$_NO_PROXY_VAL"
 export http_proxy="$_PROXY_URL"
 export https_proxy="$_PROXY_URL"
 export no_proxy="$_NO_PROXY_VAL"
+export NODE_USE_ENV_PROXY="${NODE_USE_ENV_PROXY:-1}"
+export NODE_EXTRA_CA_CERTS="${NODE_EXTRA_CA_CERTS:-/etc/openshell-tls/openshell-ca.pem}"
 PROXYEOF
+    printf 'export NEMOCLAW_START_RESTART_PATH=%q\n' "${_NEMOCLAW_START_PATH:-/usr/local/bin/nemoclaw-start}"
     if [ -n "${OPENCLAW_GATEWAY_TOKEN:-}" ]; then
       _escaped_gateway_token="$(printf '%s' "$OPENCLAW_GATEWAY_TOKEN" | sed "s/'/'\\\\''/g")"
       printf "export OPENCLAW_GATEWAY_TOKEN='%s'\n" "$_escaped_gateway_token"
     fi
     cat <<'GUARDENVEOF'
 # nemoclaw-configure-guard begin
+nemoclaw_gateway_restart() {
+  echo "NemoClaw: restarting the sandbox-local OpenClaw gateway via nemoclaw-start." >&2
+  echo "NemoClaw: this replaces OpenClaw's native gateway restart path inside sandboxes." >&2
+
+  rm -f /tmp/nemoclaw-start.log /tmp/gateway.log /tmp/nemoclaw-*.js /tmp/.nemoclaw-*.tmp.* 2>/dev/null || true
+
+  python3 - <<'PY'
+from pathlib import Path
+import os
+import signal
+import socket
+import subprocess
+import sys
+import time
+
+def cmdline_for(proc):
+    try:
+        return (proc / "cmdline").read_bytes().replace(b"\x00", b" ").decode("utf-8", "replace").strip()
+    except Exception:
+        return ""
+
+def restart_target_pids():
+    pids = []
+    launcher_pids = []
+    for proc in Path("/proc").iterdir():
+        if not proc.name.isdigit():
+            continue
+        pid = int(proc.name)
+        if pid in {os.getpid(), os.getppid()}:
+            continue
+        cmdline = cmdline_for(proc)
+        if not cmdline:
+            continue
+        if "openclaw-gateway" in cmdline or "openclaw gateway" in cmdline:
+            pids.append(pid)
+        elif "nemoclaw-start" in cmdline:
+            launcher_pids.append(pid)
+    # Keep the oldest launcher as the container supervisor when present; stale
+    # duplicate launchers are safe to stop before relaunching the gateway.
+    pids.extend(sorted(launcher_pids)[1:])
+    return sorted(set(pids))
+
+def port_open():
+    for host in ("127.0.0.1", "::1"):
+        try:
+            with socket.create_connection((host, 18789), timeout=0.5):
+                return True
+        except Exception:
+            pass
+    return False
+
+for pid in restart_target_pids():
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+
+deadline = time.time() + 20
+while time.time() < deadline and (restart_target_pids() or port_open()):
+    time.sleep(0.5)
+
+remaining = restart_target_pids()
+if remaining:
+    print(f"NemoClaw: gateway processes did not stop cleanly: {remaining}", file=sys.stderr)
+    return_code = 1
+else:
+    log = open("/tmp/nemoclaw-start.manual.log", "ab", buffering=0)
+    restart_cmd = os.environ.get("NEMOCLAW_START_RESTART_PATH", "/usr/local/bin/nemoclaw-start")
+    subprocess.Popen(
+        ["nohup", restart_cmd],
+        stdout=log,
+        stderr=subprocess.STDOUT,
+        stdin=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    deadline = time.time() + int(os.environ.get("NEMOCLAW_GATEWAY_RESTART_WAIT_SECS", "45"))
+    while time.time() < deadline:
+        if port_open():
+            print("NemoClaw: gateway restart completed; 127.0.0.1:18789 is listening.", file=sys.stderr)
+            return_code = 0
+            break
+        time.sleep(1)
+    else:
+        print("NemoClaw: gateway restart did not open 127.0.0.1:18789 before timeout.", file=sys.stderr)
+        return_code = 1
+
+sys.exit(return_code)
+PY
+}
+
 openclaw() {
   case "$1" in
-    configure)
-      echo "Error: 'openclaw configure' cannot modify config inside the sandbox." >&2
-      echo "Changes inside the sandbox do not persist across rebuilds." >&2
-      echo "" >&2
-      echo "To change your configuration, exit the sandbox and run:" >&2
-      echo "  nemoclaw onboard --resume" >&2
-      echo "" >&2
-      echo "This rebuilds the sandbox with your updated settings." >&2
-      return 1
+    gateway)
+      case "${2:-}" in
+        restart)
+          shift 2
+          if [ "$#" -ne 0 ]; then
+            echo "Error: 'openclaw gateway restart' does not accept extra arguments inside NemoClaw sandboxes." >&2
+            return 2
+          fi
+          nemoclaw_gateway_restart
+          return $?
+          ;;
+      esac
       ;;
+    configure) ;;
     config)
       case "$2" in
-        set | unset)
-          echo "Error: 'openclaw config $2' cannot modify config inside the sandbox." >&2
-          echo "Changes inside the sandbox do not persist across rebuilds." >&2
-          echo "" >&2
-          echo "To change your configuration, exit the sandbox and run:" >&2
-          echo "  nemoclaw onboard --resume" >&2
-          echo "" >&2
-          echo "This rebuilds the sandbox with your updated settings." >&2
-          return 1
-          ;;
+        set | unset) ;;
       esac
       ;;
     channels)
       case "$2" in
-        list | "" | -h | --help) ;;
-        *)
+        add | remove | login | logout)
           echo "Error: 'openclaw channels $2' cannot modify channels inside the sandbox." >&2
           echo "Changes inside the sandbox do not persist across rebuilds." >&2
           echo "" >&2
@@ -1156,6 +1325,10 @@ GUARDENVEOF
     # Git TLS CA bundle for connect sessions (NemoClaw#2270)
     if [ -n "${GIT_SSL_CAINFO:-}" ]; then
       printf 'export GIT_SSL_CAINFO=%q\n' "$GIT_SSL_CAINFO"
+    fi
+    # Timezone for connect sessions; keep shell/Python/Node aligned with gateway.
+    if [ -n "${TZ:-}" ]; then
+      printf 'export TZ=%q\n' "$TZ"
     fi
     # Nemotron inference fix for connect sessions. (NemoClaw#1193, #2051)
     echo "export NODE_OPTIONS=\"\${NODE_OPTIONS:+\$NODE_OPTIONS }--require $_NEMOTRON_FIX_SCRIPT\""
@@ -1288,6 +1461,52 @@ chown_tree_no_symlink_follow() {
   local owner="$1" target="$2"
   [ -d "$target" ] || return 0
   find -P "$target" \( -type d -o -type f \) -exec chown "$owner" {} + 2>/dev/null || true
+}
+
+seed_workspace_templates() {
+  local config_dir="/sandbox/.openclaw"
+  local template_dir="/usr/local/lib/node_modules/openclaw/docs/reference/templates"
+  local workspace_dir
+
+  if [ ! -d "$template_dir" ]; then
+    echo "[setup] OpenClaw workspace templates not found: $template_dir" >&2
+    return 0
+  fi
+
+  for workspace_dir in "$config_dir"/workspace "$config_dir"/workspace-*; do
+    [ -d "$workspace_dir" ] || continue
+    if [ -L "$workspace_dir" ]; then
+      echo "[SECURITY] refusing symlinked workspace template target: $workspace_dir" >&2
+      continue
+    fi
+
+    TEMPLATE_DIR="$template_dir" WORKSPACE_DIR="$workspace_dir" python3 - <<'PYSEEDWORKSPACE'
+import os
+from pathlib import Path
+
+template_dir = Path(os.environ["TEMPLATE_DIR"])
+workspace_dir = Path(os.environ["WORKSPACE_DIR"])
+names = ["AGENTS.md", "SOUL.md", "TOOLS.md", "IDENTITY.md", "USER.md", "HEARTBEAT.md"]
+
+def strip_front_matter(content: str) -> str:
+    if not content.startswith("---"):
+        return content
+    end = content.find("\n---", 3)
+    if end == -1:
+        return content
+    return content[end + len("\n---"):].lstrip()
+
+for name in names:
+    dest = workspace_dir / name
+    if dest.exists():
+        continue
+    src = template_dir / name
+    if not src.exists():
+        continue
+    dest.write_text(strip_front_matter(src.read_text(encoding="utf-8")), encoding="utf-8")
+PYSEEDWORKSPACE
+    chown_tree_no_symlink_follow sandbox:sandbox "$workspace_dir" 2>/dev/null || true
+  done
 }
 
 legacy_symlinks_exist() {
@@ -1499,6 +1718,7 @@ if [ "$(id -u)" -ne 0 ]; then
   normalize_mutable_config_perms
   apply_model_override
   apply_cors_override
+  configure_sandbox_timezone
   export_gateway_token
   write_runtime_shell_env
   ensure_runtime_shell_env_shim
@@ -1576,6 +1796,7 @@ if [ "$(id -u)" -ne 0 ]; then
   # shellcheck disable=SC2034  # read by cleanup_on_signal from sandbox-init.sh
   SANDBOX_WAIT_PID="$GATEWAY_PID"
   trap cleanup_on_signal SIGTERM SIGINT
+  trap cleanup_children_on_exit EXIT
   print_dashboard_urls
 
   wait "$GATEWAY_PID"
@@ -1590,6 +1811,7 @@ verify_config_integrity_if_locked /sandbox/.openclaw
 normalize_mutable_config_perms
 apply_model_override
 apply_cors_override
+configure_sandbox_timezone
 export_gateway_token
 write_runtime_shell_env
 ensure_runtime_shell_env_shim
@@ -1705,6 +1927,7 @@ NODE
   done
 }
 provision_agent_workspaces
+seed_workspace_templates
 
 # Defence-in-depth: verify /tmp file permissions before launching services.
 # Pass the HTTP proxy-fix path so it is validated alongside proxy-env.sh
@@ -1749,6 +1972,7 @@ SANDBOX_CHILD_PIDS=("$GATEWAY_PID")
 # shellcheck disable=SC2034  # read by cleanup_on_signal from sandbox-init.sh
 SANDBOX_WAIT_PID="$GATEWAY_PID"
 trap cleanup_on_signal SIGTERM SIGINT
+trap cleanup_children_on_exit EXIT
 print_dashboard_urls
 
 # Keep container running by waiting on the gateway process.
