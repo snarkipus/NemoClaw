@@ -33,7 +33,6 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 const node_http_1 = __importDefault(require("node:http"));
-const node_net_1 = __importDefault(require("node:net"));
 const node_tls_1 = __importDefault(require("node:tls"));
 const node_https_1 = __importDefault(require("node:https"));
 const node_url_1 = require("node:url");
@@ -98,9 +97,9 @@ const _PATCHED = Symbol.for("nemoclaw.wsProxyFix");
                 callback(err);
             });
             connectReq.end();
-            // createConnection expects a synchronous return; the real socket arrives
-            // via the callback.  Return a placeholder that Node.js will discard.
-            return new node_net_1.default.Socket();
+            // The real socket arrives via callback after CONNECT succeeds; returning
+            // undefined avoids handing callers a placeholder socket that can close early.
+            return undefined;
         });
         return agent;
     }
