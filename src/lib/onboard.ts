@@ -20,6 +20,39 @@ function envInt(name: string, fallback: number): number {
   const n = Number(raw);
   return Number.isFinite(n) ? Math.max(0, Math.round(n)) : fallback;
 }
+
+function normalizeIanaTimezoneForRuntime(value: string | undefined | null): string | null {
+  const tz = String(value || "").trim();
+  if (!tz || !/^[A-Za-z0-9_+.\/-]+$/.test(tz) || tz.includes("..") || tz.startsWith("/")) {
+    return null;
+  }
+  const normalized = tz === "America/Miami" ? "America/New_York" : tz;
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: normalized }).format(new Date());
+    return normalized;
+  } catch {
+    return null;
+  }
+}
+
+function getHostTimezoneForSandbox(): string | null {
+  const candidates = [
+    process.env.TZ,
+    (() => {
+      try {
+        return fs.readFileSync("/etc/timezone", "utf8").trim().split(/\s+/)[0];
+      } catch {
+        return null;
+      }
+    })(),
+    Intl.DateTimeFormat().resolvedOptions().timeZone,
+  ];
+  for (const candidate of candidates) {
+    const tz = normalizeIanaTimezoneForRuntime(candidate);
+    if (tz) return tz;
+  }
+  return null;
+}
 /** Inference timeout (seconds) for local providers (Ollama, vLLM, NIM). */
 const LOCAL_INFERENCE_TIMEOUT_SECS = envInt("NEMOCLAW_LOCAL_INFERENCE_TIMEOUT", 180);
 /** Sandbox Ready wait after OpenShell create returns but k3s is still converging. */
@@ -1701,17 +1734,22 @@ if "deepinfra" in providers:
     die("openclaw.json contains a direct deepinfra provider; expected managed inference provider")
 
 provider = providers.get("${MANAGED_PROVIDER_ID}")
+provider_id = "${MANAGED_PROVIDER_ID}"
+if not isinstance(provider, dict) and isinstance(providers.get("xai"), dict):
+    provider = providers.get("xai")
+    provider_id = "xai"
 if not isinstance(provider, dict):
-    die("openclaw.json missing models.providers.${MANAGED_PROVIDER_ID}")
+    die("openclaw.json missing managed inference provider (${MANAGED_PROVIDER_ID} or xai)")
 if provider.get("baseUrl") != "${INFERENCE_ROUTE_URL}":
-    die("models.providers.${MANAGED_PROVIDER_ID}.baseUrl is %r; expected ${INFERENCE_ROUTE_URL}" % provider.get("baseUrl"))
+    die("models.providers.%s.baseUrl is %r; expected ${INFERENCE_ROUTE_URL}" % (provider_id, provider.get("baseUrl")))
 if provider.get("apiKey") != "unused":
-    die("models.providers.${MANAGED_PROVIDER_ID}.apiKey must remain the non-secret placeholder 'unused'")
+    die("models.providers.%s.apiKey must remain the non-secret placeholder 'unused'" % provider_id)
 
 primary = cfg.get("agents", {}).get("defaults", {}).get("model", {}).get("primary")
 expected_primary = "${MANAGED_PROVIDER_ID}/" + model
-if primary != expected_primary:
-    die("agents.defaults.model.primary is %r; expected %r" % (primary, expected_primary))
+accepted_primaries = {expected_primary, model}
+if primary not in accepted_primaries:
+    die("agents.defaults.model.primary is %r; expected one of %r" % (primary, sorted(accepted_primaries)))
 
 print("OPENCLAW_CONFIG_OK")
 PYCFG
@@ -1731,7 +1769,7 @@ print(json.dumps({
     "messages": [
         {"role": "user", "content": "Reply with exactly: PONG"}
     ],
-    "max_tokens": 32,
+    "max_tokens": 256,
 }))
 PYPAYLOAD
 
@@ -4586,6 +4624,28 @@ async function createSandbox(
       token: getCredential(webSearch.BRAVE_API_KEY_ENV),
     });
   }
+  messagingTokenDefs.push(
+    {
+      name: `${sandboxName}-github`,
+      envKey: "GITHUB_TOKEN",
+      token: getMessagingToken("GITHUB_TOKEN"),
+    },
+    {
+      name: `${sandboxName}-xai-search`,
+      envKey: "XAI_API_KEY",
+      token: getMessagingToken("XAI_API_KEY"),
+    },
+    {
+      name: `${sandboxName}-firecrawl`,
+      envKey: "FIRECRAWL_API_KEY",
+      token: getMessagingToken("FIRECRAWL_API_KEY"),
+    },
+    {
+      name: `${sandboxName}-agentmail`,
+      envKey: "AGENTMAIL_API_KEY",
+      token: getMessagingToken("AGENTMAIL_API_KEY"),
+    },
+  );
   const previousProviderCredentialHashes =
     registry.getSandbox(sandboxName)?.providerCredentialHashes ?? {};
   const hasMessagingTokens = messagingTokenDefs.some(({ token }) => !!token);
@@ -5183,6 +5243,10 @@ async function createSandbox(
   // 18789 and the gateway listens on the wrong port. (#2267, #1925)
   const effectiveDashboardPort = getDashboardForwardPort(chatUiUrl);
   envArgs.push(formatEnvAssignment("NEMOCLAW_DASHBOARD_PORT", effectiveDashboardPort));
+  const hostTimezone = getHostTimezoneForSandbox();
+  if (hostTimezone) {
+    envArgs.push(formatEnvAssignment("NEMOCLAW_HOST_TZ", hostTimezone));
+  }
   // Propagate NEMOCLAW_PROXY_HOST / NEMOCLAW_PROXY_PORT to the runtime
   // sandbox container. patchStagedDockerfile() already substitutes them
   // into the build-time Dockerfile ARG/ENV, but `openshell sandbox create

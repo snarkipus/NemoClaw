@@ -362,7 +362,10 @@ describe("onboard helpers", () => {
   it("builds a compatible-endpoint smoke script that validates managed inference config", () => {
     const script = buildCompatibleEndpointSandboxSmokeScript("deepseek-ai/DeepSeek-V4-Flash");
 
-    assert.match(script, /models\.providers\.inference/);
+    assert.match(script, /models\.providers/);
+    assert.match(script, /providers\.get\("inference"\)/);
+    assert.match(script, /providers\.get\("xai"\)/);
+    assert.match(script, /expected one of/);
     assert.match(script, /https:\/\/inference\.local\/v1/);
     assert.match(script, /apiKey.*unused/);
     assert.match(script, /agents\.defaults\.model\.primary/);
@@ -831,6 +834,28 @@ describe("onboard helpers", () => {
         inferenceCompat: null,
       },
     );
+  });
+
+  it("maps Xiaomi MiMo Pro to the Xiaomi provider shape used by the generated config", () => {
+    assert.deepEqual(getSandboxInferenceConfig("mimo-v2-pro", "nvidia-prod"), {
+      providerKey: "xiaomi",
+      primaryModelRef: "xiaomi/mimo-v2-pro",
+      inferenceBaseUrl: "https://inference.local/v1",
+      inferenceApi: "openai-completions",
+      inferenceCompat: null,
+    });
+  });
+
+  it("maps GPT-5.5 compatible endpoint sandboxes to OpenAI Responses over managed inference", () => {
+    assert.deepEqual(getSandboxInferenceConfig("gpt-5.5", "compatible-endpoint"), {
+      providerKey: "openai",
+      primaryModelRef: "openai/gpt-5.5",
+      inferenceBaseUrl: "https://inference.local/v1",
+      inferenceApi: "openai-responses",
+      inferenceCompat: {
+        supportsStore: false,
+      },
+    });
   });
 
   it("maps Model Router sandboxes through managed inference.local", () => {
@@ -3977,6 +4002,10 @@ const { createSandbox } = require(${onboardPath});
   process.env.SLACK_BOT_TOKEN = "xoxb-test-slack-token-value";
   process.env.SLACK_APP_TOKEN = "xapp-test-slack-app-token-value";
   process.env.TELEGRAM_BOT_TOKEN = "123456:ABC-test-telegram-token";
+  process.env.GITHUB_TOKEN = "ghp-test-github-token-value";
+  process.env.XAI_API_KEY = "xai-test-token-value";
+  process.env.FIRECRAWL_API_KEY = "fc-test-token-value";
+  process.env.AGENTMAIL_API_KEY = "am-test-token-value";
   process.env.KUBECONFIG = "/tmp/host-kubeconfig";
   process.env.SSH_AUTH_SOCK = "/tmp/host-ssh-agent.sock";
   const sandboxName = await createSandbox(null, "gpt-5.4");
@@ -4031,7 +4060,22 @@ const { createSandbox } = require(${onboardPath});
       assert.ok(telegramProvider, "expected my-assistant-telegram-bridge provider create command");
       assert.match(telegramProvider.command, /--credential TELEGRAM_BOT_TOKEN/);
 
-      // Verify sandbox create includes --provider flags for all three
+      const extraProviders = [
+        ["my-assistant-github", "GITHUB_TOKEN", "ghp-test-github-token-value"],
+        ["my-assistant-xai-search", "XAI_API_KEY", "xai-test-token-value"],
+        ["my-assistant-firecrawl", "FIRECRAWL_API_KEY", "fc-test-token-value"],
+        ["my-assistant-agentmail", "AGENTMAIL_API_KEY", "am-test-token-value"],
+      ];
+      for (const [providerName, envKey, token] of extraProviders) {
+        const providerCommand = providerCommands.find((e: CommandEntry) =>
+          e.command.includes(providerName),
+        );
+        assert.ok(providerCommand, `expected ${providerName} provider create command`);
+        assert.match(providerCommand.command, new RegExp(`--credential ${envKey}`));
+        assert.equal(providerCommand.env?.[envKey], token);
+      }
+
+      // Verify sandbox create includes --provider flags for all attached providers.
       const createCommand = payload.commands.find((e: CommandEntry) =>
         e.command.includes("sandbox create"),
       );
@@ -4044,6 +4088,10 @@ const { createSandbox } = require(${onboardPath});
       assert.match(createCommand.policyContent || "", /network_policies:/);
       assert.match(createCommand.policyContent || "", /slack:/);
       assert.match(createCommand.policyContent || "", /wss-primary\.slack\.com/);
+      assert.match(createCommand.command, /--provider my-assistant-github/);
+      assert.match(createCommand.command, /--provider my-assistant-xai-search/);
+      assert.match(createCommand.command, /--provider my-assistant-firecrawl/);
+      assert.match(createCommand.command, /--provider my-assistant-agentmail/);
 
       // Discord and Telegram tokens must NOT appear in the sandbox create command
       // (they flow exclusively through the openshell provider credential system).
@@ -4081,6 +4129,9 @@ const { createSandbox } = require(${onboardPath});
         undefined,
         "NVIDIA_API_KEY must not be in sandbox env",
       );
+      for (const envKey of ["GITHUB_TOKEN", "XAI_API_KEY", "FIRECRAWL_API_KEY", "AGENTMAIL_API_KEY"]) {
+        assert.equal(createCommand.env[envKey], undefined, `${envKey} must not be in sandbox env`);
+      }
       assert.equal(
         createCommand.env.KUBECONFIG,
         undefined,
@@ -4110,6 +4161,13 @@ const { createSandbox } = require(${onboardPath});
         !envString.includes("123456:ABC-test-telegram-token"),
         "Telegram token value must not leak into sandbox env",
       );
+      for (const rawToken of [
+        "ghp-test-github-token-value",
+        "fc-test-token-value",
+        "am-test-token-value",
+      ]) {
+        assert.ok(!envString.includes(rawToken), `${rawToken} must not leak into sandbox env`);
+      }
     },
   );
 

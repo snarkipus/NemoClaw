@@ -452,7 +452,7 @@ import os
 print(json.dumps({
     "model": os.environ["COMPAT_MODEL"],
     "messages": [{"role": "user", "content": "Reply with exactly: PONG"}],
-    "max_tokens": 32,
+    "max_tokens": 256,
 }))
 ')
   payload_arg="$(printf '%q' "$payload")"

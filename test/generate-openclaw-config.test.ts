@@ -277,6 +277,214 @@ describe("generate-openclaw-config.py: config generation", () => {
     expect(config.models.providers.deepinfra).toBeUndefined();
   });
 
+  it("matches the live xai plus xiaomi runtime model provider shape", () => {
+    const config = runConfigScript({
+      NEMOCLAW_MODEL: "mimo-v2-pro",
+      NEMOCLAW_PROVIDER_KEY: "xiaomi",
+      NEMOCLAW_PRIMARY_MODEL_REF: "xiaomi/mimo-v2-pro",
+      NEMOCLAW_INFERENCE_BASE_URL: "https://inference.local/v1",
+      NEMOCLAW_INFERENCE_API: "openai-completions",
+      NEMOCLAW_CONTEXT_WINDOW: "1048576",
+      NEMOCLAW_MAX_TOKENS: "16384",
+      NEMOCLAW_REASONING: "true",
+      NEMOCLAW_WEB_SEARCH_ENABLED: "1",
+      NEMOCLAW_INFERENCE_COMPAT_B64: Buffer.from(JSON.stringify(null)).toString("base64"),
+    });
+
+    expect(Object.keys(config.models.providers).sort()).toEqual(["xai", "xiaomi"]);
+    expect(config.models.providers.xai.baseUrl).toBe("https://inference.local/v1");
+    expect(config.models.providers.xai.apiKey).toBe("unused");
+    expect(config.models.providers.xai.api).toBe("openai-responses");
+    expect(config.models.providers.xai.models[0]).toMatchObject({
+      id: "grok-4.3",
+      name: "Grok 4.3",
+      reasoning: true,
+      input: ["text", "image"],
+      contextWindow: 1000000,
+      maxTokens: 64000,
+      cost: { input: 1.25, output: 2.5, cacheRead: 0.2, cacheWrite: 0 },
+    });
+    expect(config.models.providers.xiaomi.baseUrl).toBe("https://inference.local/v1");
+    expect(config.models.providers.xiaomi.apiKey).toBe("unused");
+    expect(config.models.providers.xiaomi.models[0]).toMatchObject({
+      id: "mimo-v2-pro",
+      name: "Xiaomi MiMo V2 Pro",
+      reasoning: true,
+      input: ["text"],
+      contextWindow: 1048576,
+      maxTokens: 32000,
+      cost: { input: 1, output: 3, cacheRead: 0.2, cacheWrite: 0 },
+    });
+    expect(config.agents.defaults.model.primary).toBe("grok-4.3");
+    expect(config.plugins.entries.xai).toEqual({
+      enabled: true,
+      config: {
+        webSearch: {
+          apiKey: "openshell:resolve:env:XAI_API_KEY",
+          baseUrl: "https://api.x.ai/v1",
+        },
+        xSearch: { baseUrl: "https://api.x.ai/v1", enabled: true },
+        codeExecution: { enabled: true },
+      },
+    });
+    expect(config.plugins.entries.xiaomi).toEqual({ enabled: true });
+    expect(config.tools).toEqual({
+      web: {
+        search: { enabled: true, provider: "grok" },
+        fetch: { enabled: true, provider: "firecrawl" },
+      },
+    });
+    expect(config.memory).toEqual({ backend: "qmd", qmd: { searchMode: "vsearch" } });
+    expect(config.env).toEqual({ GITHUB_TOKEN: "openshell:resolve:env:GITHUB_TOKEN" });
+    expect(config.plugins.entries.firecrawl).toEqual({
+      enabled: true,
+      config: {
+        webFetch: {
+          apiKey: "openshell:resolve:env:FIRECRAWL_API_KEY",
+          baseUrl: "https://api.firecrawl.dev",
+          maxAgeMs: 172800000,
+          onlyMainContent: true,
+          timeoutSeconds: 60,
+        },
+      },
+    });
+    expect(config.plugins.entries["memory-core"]).toEqual({
+      enabled: true,
+      config: {
+        dreaming: {
+          enabled: true,
+          frequency: "0 */12 * * *",
+          timezone: "America/New_York",
+        },
+      },
+    });
+    expect(config.plugins.entries["memory-wiki"]).toEqual({
+      enabled: true,
+      config: {
+        bridge: {
+          enabled: true,
+          followMemoryEvents: true,
+          indexDailyNotes: true,
+          indexDreamReports: true,
+          indexMemoryRoot: true,
+          readMemoryArtifacts: true,
+        },
+        context: { includeCompiledDigestPrompt: false },
+        search: { backend: "shared", corpus: "all" },
+        vault: { renderMode: "obsidian" },
+        vaultMode: "bridge",
+      },
+    });
+  });
+
+  it("uses the rich OpenShell runtime profile for compatible grok canaries", () => {
+    const config = runConfigScript({
+      NEMOCLAW_MODEL: "grok-4.3",
+      NEMOCLAW_PROVIDER_KEY: "inference",
+      NEMOCLAW_PRIMARY_MODEL_REF: "inference/grok-4.3",
+      NEMOCLAW_INFERENCE_BASE_URL: "https://inference.local/v1",
+      NEMOCLAW_INFERENCE_API: "openai-responses",
+      NEMOCLAW_CONTEXT_WINDOW: "1000000",
+      NEMOCLAW_MAX_TOKENS: "64000",
+      NEMOCLAW_REASONING: "true",
+      NEMOCLAW_WEB_SEARCH_ENABLED: "1",
+      NEMOCLAW_INFERENCE_COMPAT_B64: Buffer.from(JSON.stringify({ supportsStore: true })).toString(
+        "base64",
+      ),
+    });
+
+    expect(Object.keys(config.models.providers).sort()).toEqual(["xai", "xiaomi"]);
+    expect(config.agents.defaults.model.primary).toBe("grok-4.3");
+    expect(config.models.providers.xai).toMatchObject({
+      baseUrl: "https://inference.local/v1",
+      apiKey: "unused",
+      api: "openai-responses",
+    });
+    expect(config.models.providers.xai.models[0]).toMatchObject({
+      id: "grok-4.3",
+      name: "Grok 4.3",
+      reasoning: true,
+      input: ["text", "image"],
+      contextWindow: 1000000,
+      maxTokens: 64000,
+    });
+    expect(config.models.providers.xiaomi.models[0]).toMatchObject({
+      id: "mimo-v2-pro",
+      name: "Xiaomi MiMo V2 Pro",
+    });
+    expect(config.plugins.entries.xai.config.xSearch).toEqual({
+      baseUrl: "https://api.x.ai/v1",
+      enabled: true,
+    });
+    expect(config.plugins.entries.firecrawl.config.webFetch.baseUrl).toBe(
+      "https://api.firecrawl.dev",
+    );
+    expect(config.tools).toEqual({
+      web: {
+        search: { enabled: true, provider: "grok" },
+        fetch: { enabled: true, provider: "firecrawl" },
+      },
+    });
+    expect(config.memory).toEqual({ backend: "qmd", qmd: { searchMode: "vsearch" } });
+    expect(config.env).toEqual({ GITHUB_TOKEN: "openshell:resolve:env:GITHUB_TOKEN" });
+    expect(config.plugins.entries.acpx).toBeUndefined();
+    expect(config.plugins.entries.qqbot).toBeUndefined();
+  });
+
+  it("keeps GPT-5.5 as primary while preserving the rich OpenShell tool profile", () => {
+    const config = runConfigScript({
+      NEMOCLAW_MODEL: "gpt-5.5",
+      NEMOCLAW_PROVIDER_KEY: "openai",
+      NEMOCLAW_PRIMARY_MODEL_REF: "openai/gpt-5.5",
+      NEMOCLAW_INFERENCE_BASE_URL: "https://inference.local/v1",
+      NEMOCLAW_INFERENCE_API: "openai-responses",
+      NEMOCLAW_CONTEXT_WINDOW: "400000",
+      NEMOCLAW_MAX_TOKENS: "16192",
+      NEMOCLAW_REASONING: "true",
+      NEMOCLAW_INFERENCE_INPUTS: "text,image",
+      NEMOCLAW_WEB_SEARCH_ENABLED: "1",
+      NEMOCLAW_INFERENCE_COMPAT_B64: Buffer.from(JSON.stringify({ supportsStore: false })).toString(
+        "base64",
+      ),
+    });
+
+    expect(Object.keys(config.models.providers).sort()).toEqual(["openai", "xai", "xiaomi"]);
+    expect(config.agents.defaults.model.primary).toBe("openai/gpt-5.5");
+    expect(config.models.providers.openai).toMatchObject({
+      baseUrl: "https://inference.local/v1",
+      apiKey: "unused",
+      api: "openai-responses",
+    });
+    expect(config.models.providers.openai.models[0]).toMatchObject({
+      id: "openai/gpt-5.5",
+      name: "GPT-5.5",
+      compat: { supportsStore: false },
+      reasoning: true,
+      input: ["text", "image"],
+      contextWindow: 400000,
+      maxTokens: 16192,
+    });
+    expect(config.models.providers.xai.models[0].id).toBe("grok-4.3");
+    expect(config.models.providers.xiaomi.models[0]).toMatchObject({
+      id: "mimo-v2-pro",
+      reasoning: true,
+      contextWindow: 1048576,
+      maxTokens: 32000,
+    });
+    expect(config.plugins.entries.xai.config.webSearch.baseUrl).toBe("https://api.x.ai/v1");
+    expect(config.plugins.entries.firecrawl.config.webFetch.baseUrl).toBe(
+      "https://api.firecrawl.dev",
+    );
+    expect(config.plugins.entries["memory-core"].config.dreaming.frequency).toBe("0 */12 * * *");
+    expect(config.tools).toEqual({
+      web: {
+        search: { enabled: true, provider: "grok" },
+        fetch: { enabled: true, provider: "firecrawl" },
+      },
+    });
+    expect(config.memory).toEqual({ backend: "qmd", qmd: { searchMode: "vsearch" } });
+  });
+
   it("adds Kimi K2.6 compat for managed inference.local chat completions", () => {
     const config = runConfigScript({
       NEMOCLAW_MODEL: "moonshotai/kimi-k2.6",
@@ -583,10 +791,10 @@ describe("generate-openclaw-config.py: config generation", () => {
     expect(config.gateway.auth.token).toBe("");
   });
 
-  it("disables bundled acpx runtime staging by default", () => {
+  it("omits disabled optional plugin entries that produce validate warnings", () => {
     const config = runConfigScript();
-    expect(config.plugins.entries.acpx.enabled).toBe(false);
-    expect(config.plugins.entries.acpx.config).toBeUndefined();
+    expect(config.plugins.entries.acpx).toBeUndefined();
+    expect(config.plugins.entries.qqbot).toBeUndefined();
   });
 
   it("disables unused bundled provider plugins with staged runtime deps", () => {

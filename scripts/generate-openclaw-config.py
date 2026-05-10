@@ -469,19 +469,36 @@ def build_config(env: dict | None = None) -> dict:
     )
     allow_insecure = parsed.scheme == "http"
 
-    providers = {
-        provider_key: {
+    rich_openshell_profile = provider_key == "xiaomi" or (
+        provider_key == "openai" and model in {"gpt-5.5", "openai/gpt-5.5"}
+    ) or (
+        provider_key == "inference"
+        and model in {"gpt-5.5", "openai/gpt-5.5", "grok-4.3"}
+        and inference_base_url.rstrip("/") == "https://inference.local/v1"
+    )
+    gpt55_openshell_profile = rich_openshell_profile and model in {
+        "gpt-5.5",
+        "openai/gpt-5.5",
+    }
+
+    def _provider_config(
+        model_name: str,
+        cost: dict | None = None,
+        api_key: str = "unused",
+        model_id: str | None = None,
+    ) -> dict:
+        return {
             "baseUrl": inference_base_url,
-            "apiKey": "unused",
+            "apiKey": api_key,
             "api": inference_api,
             "models": [
                 {
                     **({"compat": inference_compat} if inference_compat else {}),
-                    "id": model,
-                    "name": primary_model_ref,
+                    "id": model_id or model,
+                    "name": model_name,
                     "reasoning": reasoning,
                     "input": inference_inputs,
-                    "cost": {
+                    "cost": cost or {
                         "input": 0,
                         "output": 0,
                         "cacheRead": 0,
@@ -492,17 +509,64 @@ def build_config(env: dict | None = None) -> dict:
                 }
             ],
         }
-    }
+
+    if rich_openshell_profile:
+        primary_model_ref = "openai/gpt-5.5" if gpt55_openshell_profile else "grok-4.3"
+        providers = {
+            "xai": {
+                "baseUrl": inference_base_url,
+                "apiKey": "unused",
+                "api": "openai-responses",
+                "models": [
+                    {
+                        "id": "grok-4.3",
+                        "name": "Grok 4.3",
+                        "reasoning": True,
+                        "input": ["text", "image"],
+                        "cost": {
+                            "input": 1.25,
+                            "output": 2.5,
+                            "cacheRead": 0.2,
+                            "cacheWrite": 0,
+                        },
+                        "contextWindow": 1000000,
+                        "maxTokens": 64000,
+                    }
+                ],
+            },
+            "xiaomi": {
+                "baseUrl": inference_base_url,
+                "apiKey": "unused",
+                "api": "openai-completions",
+                "models": [
+                    {
+                        "compat": {"supportsStore": False},
+                        "id": "mimo-v2-pro",
+                        "name": "Xiaomi MiMo V2 Pro",
+                        "reasoning": True,
+                        "input": ["text"],
+                        "cost": {
+                            "input": 1,
+                            "output": 3,
+                            "cacheRead": 0.2,
+                            "cacheWrite": 0,
+                        },
+                        "contextWindow": 1048576,
+                        "maxTokens": 32000,
+                    }
+                ],
+            },
+        }
+        if gpt55_openshell_profile:
+            providers["openai"] = _provider_config("GPT-5.5", model_id="openai/gpt-5.5")
+    else:
+        providers = {provider_key: _provider_config(primary_model_ref)}
 
     # OpenClaw stages runtime dependencies for every bundled enabledByDefault
     # provider plugin. NemoClaw bakes one model provider into openclaw.json, so
     # keeping unused default providers enabled bloats image builds and, once the
     # gateway has write access to plugin-runtime-deps, can stall first startup.
-    plugin_entries = {
-        "acpx": {"enabled": False},
-        "bonjour": {"enabled": False},
-        "qqbot": {"enabled": False},
-    }
+    plugin_entries = {"bonjour": {"enabled": False}}
     _bundled_provider_plugins = {
         "amazon-bedrock": {"amazon-bedrock", "bedrock"},
         "amazon-bedrock-mantle": {"amazon-bedrock-mantle"},
@@ -519,6 +583,60 @@ def build_config(env: dict | None = None) -> dict:
     for _plugin_id, _provider_keys in _bundled_provider_plugins.items():
         if provider_key not in _provider_keys:
             plugin_entries[_plugin_id] = {"enabled": False}
+    xai_plugin_base_url = env.get("NEMOCLAW_XAI_PLUGIN_BASE_URL", "https://api.x.ai/v1")
+
+    if rich_openshell_profile:
+        plugin_entries["xai"] = {
+            "enabled": True,
+            "config": {
+                "webSearch": {
+                    "apiKey": "openshell:resolve:env:XAI_API_KEY",
+                    "baseUrl": xai_plugin_base_url,
+                },
+                "xSearch": {"baseUrl": xai_plugin_base_url, "enabled": True},
+                "codeExecution": {"enabled": True},
+            },
+        }
+        plugin_entries["xiaomi"] = {"enabled": True}
+        plugin_entries["firecrawl"] = {
+            "enabled": True,
+            "config": {
+                "webFetch": {
+                    "apiKey": "openshell:resolve:env:FIRECRAWL_API_KEY",
+                    "baseUrl": "https://api.firecrawl.dev",
+                    "maxAgeMs": 172800000,
+                    "onlyMainContent": True,
+                    "timeoutSeconds": 60,
+                }
+            },
+        }
+        plugin_entries["memory-core"] = {
+            "enabled": True,
+            "config": {
+                "dreaming": {
+                    "enabled": True,
+                    "frequency": "0 */12 * * *",
+                    "timezone": "America/New_York",
+                }
+            },
+        }
+        plugin_entries["memory-wiki"] = {
+            "enabled": True,
+            "config": {
+                "bridge": {
+                    "enabled": True,
+                    "followMemoryEvents": True,
+                    "indexDailyNotes": True,
+                    "indexDreamReports": True,
+                    "indexMemoryRoot": True,
+                    "readMemoryArtifacts": True,
+                },
+                "context": {"includeCompiledDigestPrompt": False},
+                "search": {"backend": "shared", "corpus": "all"},
+                "vault": {"renderMode": "obsidian"},
+                "vaultMode": "bridge",
+            },
+        }
 
     plugins = {"entries": plugin_entries}
     plugin_load_paths: list[str] = []
@@ -558,20 +676,12 @@ def build_config(env: dict | None = None) -> dict:
         #     uv_interface_addresses or async via "CIAO PROBING CANCELLED".
         #     Introduced in OpenClaw 2026.4.15. See NemoClaw#2484.
         #
-        #   qqbot — has stageRuntimeDependencies=true, so its npm deps
-        #     (@tencent-connect/qqbot-connector et al.) install on first
-        #     load. The sandbox L7 proxy denies the registry URL, the
-        #     install retries for ~6 minutes, and while it's stuck the
-        #     gateway can't service openclaw-agent requests — that's the
-        #     TC-SBX-02 hang in 2026.4.24.
-        #
-        # acpx is disabled by default because its runtime dependency staging
-        # also reaches npm during gateway startup. NemoClaw's primary CLI path
-        # invokes openclaw-agent directly, not ACPx.
-        #
         # Provider plugins with staged runtime dependencies are disabled above
         # unless they match NEMOCLAW_PROVIDER_KEY. That keeps the baked image
         # limited to the provider selected during onboard.
+        # Optional non-provider plugins such as acpx and qqbot are left absent
+        # unless explicitly installed; disabled entries for missing plugins make
+        # `openclaw config validate` noisy without improving the baseline.
         "plugins": plugins,
         "gateway": {
             "mode": "local",
@@ -586,16 +696,28 @@ def build_config(env: dict | None = None) -> dict:
     }
 
     if env.get("NEMOCLAW_WEB_SEARCH_ENABLED", "") == "1":
-        config["tools"] = {
-            "web": {
-                "search": {
-                    "enabled": True,
-                    "provider": "brave",
-                    "apiKey": "openshell:resolve:env:BRAVE_API_KEY",
-                },
-                "fetch": {"enabled": True},
+        if rich_openshell_profile:
+            config["tools"] = {
+                "web": {
+                    "search": {"enabled": True, "provider": "grok"},
+                    "fetch": {"enabled": True, "provider": "firecrawl"},
+                }
             }
-        }
+        else:
+            config["tools"] = {
+                "web": {
+                    "search": {
+                        "enabled": True,
+                        "provider": "brave",
+                        "apiKey": "openshell:resolve:env:BRAVE_API_KEY",
+                    },
+                    "fetch": {"enabled": True},
+                }
+            }
+
+    if rich_openshell_profile:
+        config["env"] = {"GITHUB_TOKEN": "openshell:resolve:env:GITHUB_TOKEN"}
+        config["memory"] = {"backend": "qmd", "qmd": {"searchMode": "vsearch"}}
 
     return config
 

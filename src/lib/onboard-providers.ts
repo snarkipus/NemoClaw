@@ -320,6 +320,16 @@ function getSandboxInferenceConfig(
   let inferenceCompat = null;
 
   switch (provider) {
+    case "nvidia-prod":
+    case "nvidia-nim":
+      if (model === "mimo-v2-pro") {
+        providerKey = "xiaomi";
+        primaryModelRef = "xiaomi/mimo-v2-pro";
+        break;
+      }
+      providerKey = "inference";
+      primaryModelRef = `inference/${model}`;
+      break;
     case "openai-api":
       providerKey = "openai";
       primaryModelRef = `openai/${model}`;
@@ -339,6 +349,15 @@ function getSandboxInferenceConfig(
       };
       break;
     case "compatible-endpoint":
+      if (model === "gpt-5.5" || model === "openai/gpt-5.5") {
+        providerKey = "openai";
+        primaryModelRef = "openai/gpt-5.5";
+        inferenceApi = preferredInferenceApi || "openai-responses";
+        inferenceCompat = {
+          supportsStore: false,
+        };
+        break;
+      }
       providerKey = "inference";
       primaryModelRef = `inference/${model}`;
       inferenceCompat = {
@@ -349,8 +368,6 @@ function getSandboxInferenceConfig(
       providerKey = "inference";
       primaryModelRef = `inference/${model}`;
       break;
-    case "nvidia-prod":
-    case "nvidia-nim":
     default:
       providerKey = "inference";
       primaryModelRef = `inference/${model}`;
