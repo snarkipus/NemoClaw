@@ -245,6 +245,46 @@ describe("sandbox provisioning: procps debug tools (#2343)", () => {
   });
 });
 
+describe("sandbox provisioning: operator tools", () => {
+  it("pre-installs pinned operator/debug binaries", () => {
+    const dockerfile = fs.readFileSync(DOCKERFILE, "utf-8");
+    expect(dockerfile).toContain("ARG GH_VERSION=2.92.0");
+    expect(dockerfile).toContain("ARG NEOVIM_VERSION=0.12.2");
+    expect(dockerfile).toContain(
+      "ARG NEOVIM_X86_64_SHA256=31cf85945cb600d96cdf69f88bc68bec814acbff50863c5546adef3a1bcef260",
+    );
+    expect(dockerfile).toContain(
+      "ARG NEOVIM_ARM64_SHA256=f697d4e4582b6e4b5c3c26e76e06ce26efa08ba1768e03fd2733fcc422bb0490",
+    );
+    expect(dockerfile).toContain("ARG OBSIDIAN_HEADLESS_VERSION=0.0.8");
+    expect(dockerfile).toContain("ARG QMD_VERSION=2.1.0");
+    expect(dockerfile).toContain("ARG PM2_VERSION=7.0.1");
+    expect(dockerfile).toContain("ARG AGENTMAIL_PYTHON_SDK_VERSION=0.5.0");
+    expect(dockerfile).toContain('"gh=${GH_VERSION}"');
+    expect(dockerfile).toContain("nvim-linux-${nvim_arch}.tar.gz");
+    expect(dockerfile).toContain("sha256sum -c -");
+    expect(dockerfile).toContain("ln -sf /usr/local/lib/nvim/bin/nvim /usr/local/bin/nvim");
+    expect(dockerfile).toContain('"obsidian-headless@${OBSIDIAN_HEADLESS_VERSION}"');
+    expect(dockerfile).toContain('"@tobilu/qmd@${QMD_VERSION}"');
+    expect(dockerfile).toContain('"pm2@${PM2_VERSION}"');
+    expect(dockerfile).toContain('"agentmail==${AGENTMAIL_PYTHON_SDK_VERSION}"');
+    expect(dockerfile).toContain('test -e "$telegram_dir/package.json"');
+    expect(dockerfile).toContain('npm install --prefix "$tmp_telegram_deps"');
+    expect(dockerfile).toContain('cp -a "$tmp_telegram_deps/node_modules" "$telegram_dir/node_modules"');
+    expect(dockerfile).toContain("'grammy@^1.42.0'");
+    expect(dockerfile).toContain("workspace:* dev deps");
+    expect(dockerfile).toContain('test -e "$telegram_dir/node_modules/grammy/package.json"');
+    expect(dockerfile).toContain("xai_dir=/usr/local/lib/node_modules/openclaw/dist/extensions/xai");
+    expect(dockerfile).toContain("'@mariozechner/pi-ai@0.71.1'");
+    expect(dockerfile).toContain("memory_core_dir=/usr/local/lib/node_modules/openclaw/dist/extensions/memory-core");
+    expect(dockerfile).toContain("'chokidar@^5.0.0'");
+    expect(dockerfile).toContain("command -v ob >/dev/null");
+    expect(dockerfile).toContain("command -v qmd >/dev/null");
+    expect(dockerfile).toContain("command -v pm2 >/dev/null");
+    expect(dockerfile).toContain("from agentmail import AgentMail");
+  });
+});
+
 describe("sandbox provisioning: copied OpenClaw helper permissions (#2861)", () => {
   it("normalizes the config generator mode after Docker COPY preserves a restrictive source mode", () => {
     const dockerfile = fs.readFileSync(DOCKERFILE, "utf-8");

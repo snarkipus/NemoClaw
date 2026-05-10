@@ -43,6 +43,45 @@ RUN apt-mark manual procps 2>/dev/null || true \
     fi \
     && ps --version
 
+ARG GH_VERSION=2.92.0
+ARG NEOVIM_VERSION=0.12.2
+ARG NEOVIM_X86_64_SHA256=31cf85945cb600d96cdf69f88bc68bec814acbff50863c5546adef3a1bcef260
+ARG NEOVIM_ARM64_SHA256=f697d4e4582b6e4b5c3c26e76e06ce26efa08ba1768e03fd2733fcc422bb0490
+ARG OBSIDIAN_HEADLESS_VERSION=0.0.8
+ARG QMD_VERSION=2.1.0
+ARG PM2_VERSION=7.0.1
+ARG AGENTMAIL_PYTHON_SDK_VERSION=0.5.0
+
+# Install operator/debug tooling at build time. The running sandbox is policy-
+# gated, lacks systemd, and should not rely on runtime package installs for
+# core maintenance tools.
+# hadolint ignore=DL3059,DL4006
+RUN mkdir -p /etc/apt/keyrings \
+    && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+        -o /etc/apt/keyrings/githubcli-archive-keyring.gpg \
+    && chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg \
+    && printf '%s\n' 'deb [arch=amd64,arm64 signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main' \
+        > /etc/apt/sources.list.d/github-cli.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends \
+        "gh=${GH_VERSION}" \
+    && rm -rf /var/lib/apt/lists/* \
+    && arch="$(dpkg --print-architecture)" \
+    && case "$arch" in \
+        amd64) nvim_arch=x86_64; nvim_sha="${NEOVIM_X86_64_SHA256}" ;; \
+        arm64) nvim_arch=arm64; nvim_sha="${NEOVIM_ARM64_SHA256}" ;; \
+        *) echo "Unsupported Neovim architecture: $arch" >&2; exit 1 ;; \
+    esac \
+    && curl -fsSL "https://github.com/neovim/neovim/releases/download/v${NEOVIM_VERSION}/nvim-linux-${nvim_arch}.tar.gz" \
+        -o /tmp/nvim-linux.tar.gz \
+    && printf '%s  %s\n' "$nvim_sha" /tmp/nvim-linux.tar.gz | sha256sum -c - \
+    && mkdir -p /usr/local/lib/nvim \
+    && tar -xzf /tmp/nvim-linux.tar.gz -C /usr/local/lib/nvim --strip-components=1 \
+    && ln -sf /usr/local/lib/nvim/bin/nvim /usr/local/bin/nvim \
+    && rm -f /tmp/nvim-linux.tar.gz \
+    && gh --version \
+    && nvim --version
+
 # Copy built plugin and blueprint into the sandbox
 COPY --from=builder /opt/nemoclaw/dist/ /opt/nemoclaw/dist/
 COPY nemoclaw/openclaw.plugin.json /opt/nemoclaw/
@@ -52,6 +91,19 @@ COPY nemoclaw-blueprint/ /opt/nemoclaw-blueprint/
 # Install runtime dependencies only (no devDependencies, no build step)
 WORKDIR /opt/nemoclaw
 RUN npm ci --omit=dev
+RUN npm install -g --no-audit --no-fund --no-progress \
+        "obsidian-headless@${OBSIDIAN_HEADLESS_VERSION}" \
+        "@tobilu/qmd@${QMD_VERSION}" \
+        "pm2@${PM2_VERSION}" \
+    && command -v ob >/dev/null \
+    && command -v qmd >/dev/null \
+    && command -v pm2 >/dev/null
+
+# AgentMail baseline uses pinned host-side skill provisioning. Pre-install the
+# Python SDK so the fresh sandbox does not depend on runtime pip network access.
+RUN pip3 install --no-cache-dir --break-system-packages \
+        "agentmail==${AGENTMAIL_PYTHON_SDK_VERSION}" \
+    && python3 -c 'from agentmail import AgentMail; print(AgentMail.__name__)'
 
 # Upgrade OpenClaw if the base image is stale.
 #
@@ -80,6 +132,54 @@ RUN set -eu; \
         rm -rf /usr/local/lib/node_modules/openclaw /usr/local/bin/openclaw; \
         npm install -g --no-audit --no-fund --no-progress "openclaw@${MIN_VER}"; \
     fi; \
+    # OpenClaw intentionally does not let the live gateway self-repair bundled \
+    # channel dependencies in this managed image. Install Telegram runtime deps \
+    # at build time so doctor/channel loading can resolve grammy without \
+    # runtime npm. Do not run bare `npm install --prefix "$telegram_dir"`: \
+    # OpenClaw 2026.5.x extension manifests can include workspace:* dev deps, \
+    # which npm rejects outside the upstream monorepo even with --omit=dev. \
+    telegram_dir=/usr/local/lib/node_modules/openclaw/dist/extensions/telegram; \
+    test -e "$telegram_dir/package.json"; \
+    tmp_telegram_deps=/tmp/openclaw-telegram-runtime-deps; \
+    rm -rf "$tmp_telegram_deps"; \
+    mkdir -p "$tmp_telegram_deps"; \
+    npm install --prefix "$tmp_telegram_deps" --omit=dev --ignore-scripts --no-audit --no-fund --no-progress \
+        '@grammyjs/runner@^2.0.3' \
+        '@grammyjs/transformer-throttler@^1.2.1' \
+        'grammy@^1.42.0' \
+        'typebox@1.1.37' \
+        'undici@8.1.0'; \
+    rm -rf "$telegram_dir/node_modules"; \
+    cp -a "$tmp_telegram_deps/node_modules" "$telegram_dir/node_modules"; \
+    rm -rf "$tmp_telegram_deps"; \
+    test -e "$telegram_dir/node_modules/grammy/package.json"; \
+    # Install enabled core/plugin extension runtime deps that OpenClaw's \
+    # bundled extension manifests declare with workspace:* dev deps. Installing \
+    # explicit runtime packages avoids npm resolving those monorepo-only specs. \
+    xai_dir=/usr/local/lib/node_modules/openclaw/dist/extensions/xai; \
+    memory_core_dir=/usr/local/lib/node_modules/openclaw/dist/extensions/memory-core; \
+    test -e "$xai_dir/package.json"; \
+    test -e "$memory_core_dir/package.json"; \
+    tmp_xai_deps=/tmp/openclaw-xai-runtime-deps; \
+    rm -rf "$tmp_xai_deps"; \
+    mkdir -p "$tmp_xai_deps"; \
+    npm install --prefix "$tmp_xai_deps" --omit=dev --ignore-scripts --no-audit --no-fund --no-progress \
+        '@mariozechner/pi-ai@0.71.1' \
+        'typebox@1.1.37'; \
+    rm -rf "$xai_dir/node_modules"; \
+    cp -a "$tmp_xai_deps/node_modules" "$xai_dir/node_modules"; \
+    rm -rf "$tmp_xai_deps"; \
+    test -e "$xai_dir/node_modules/@mariozechner/pi-ai/package.json"; \
+    tmp_memory_core_deps=/tmp/openclaw-memory-core-runtime-deps; \
+    rm -rf "$tmp_memory_core_deps"; \
+    mkdir -p "$tmp_memory_core_deps"; \
+    npm install --prefix "$tmp_memory_core_deps" --omit=dev --ignore-scripts --no-audit --no-fund --no-progress \
+        'chokidar@^5.0.0' \
+        'typebox@1.1.37'; \
+    rm -rf "$memory_core_dir/node_modules"; \
+    cp -a "$tmp_memory_core_deps/node_modules" "$memory_core_dir/node_modules"; \
+    rm -rf "$tmp_memory_core_deps"; \
+    test -e "$memory_core_dir/node_modules/chokidar/package.json"; \
     # Pre-install the codex-acp package so the embedded ACPx runtime can
     # call the local binary instead of `npx @zed-industries/codex-acp`.
     # The sandbox's L7 proxy denies @zed-industries/* package URLs
