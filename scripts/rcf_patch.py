@@ -68,28 +68,23 @@ fn_src = src[fn_body_start : fn_body_end + 1]
 
 # Match the tryWriteSingleTopLevelIncludeMutation / writeConfigFile block.
 # - Tolerates any whitespace around !, await, (, {, }, commas, ;
-# - Allows snapshot / nextConfig properties in either order
-# - Allows optional semicolon at end
+# - Allows extra fields like afterWrite, writeOptions, and io
+# - Allows params.io?.writeConfigFile fallback or direct writeConfigFile
 # - Uses DOTALL so \s matches newlines
 pat = re.compile(
     r"(?P<pre>[ \t]*)if\s*\(\s*!\s*await\s+tryWriteSingleTopLevelIncludeMutation\s*\("
     r"\s*\{(?=[^}]*\bsnapshot\b)(?=[^}]*\bnextConfig\s*:\s*params\.nextConfig\b)[^}]*?\}\s*\)\s*\)"
-    r"\s*await\s+writeConfigFile\s*\(\s*params\.nextConfig\s*,\s*\{[^}]*?\}\s*\)\s*;?",
+    r"\s*await\s+(?:\(\s*params\.io\?\.writeConfigFile\s*\?\?\s*writeConfigFile\s*\)|writeConfigFile)"
+    r"\s*\(\s*params\.nextConfig\s*,\s*\{[^}]*?\}\s*\)\s*;?",
     re.DOTALL,
 )
 m = pat.search(fn_src)
 assert m, "tryWriteSingleTopLevelIncludeMutation/writeConfigFile pattern not found in replaceConfigFile"
 
 indent = m.group("pre")
+write_block = m.group(0).strip()
 replacement = (
-    indent + "try { if (!await tryWriteSingleTopLevelIncludeMutation({\n"
-    + indent + "\tsnapshot,\n"
-    + indent + "\tnextConfig: params.nextConfig\n"
-    + indent + "})) await writeConfigFile(params.nextConfig, {\n"
-    + indent + "\tbaseSnapshot: snapshot,\n"
-    + indent + "\t...writeOptions,\n"
-    + indent + "\t...params.writeOptions\n"
-    + indent + '}); } catch(_rcfErr) { if (process.env.OPENSHELL_SANDBOX === "1" && _rcfErr.code === "EACCES") {'
+    indent + "try { " + write_block + " } catch(_rcfErr) { if (process.env.OPENSHELL_SANDBOX === \"1\" && _rcfErr.code === \"EACCES\") {"
     + ' console.error("[nemoclaw] Config is read-only in sandbox \\u2014 plugin metadata not persisted (plugins auto-load from extensions/)"); }'
     + " else { throw _rcfErr; } }"
 )

@@ -44,6 +44,28 @@ ${properties}
 `;
 }
 
+function currentReplaceConfigFileBody(properties: string) {
+  return `
+async function replaceConfigFile(params) {
+  const { snapshot, writeOptions } = params.snapshot && params.writeOptions ? {
+    snapshot: params.snapshot,
+    writeOptions: params.writeOptions
+  } : await (params.io?.readConfigFileSnapshotForWrite ?? readConfigFileSnapshotForWrite)();
+  const previousHash = assertBaseHashMatches(snapshot, params.baseHash);
+  const afterWrite = resolveConfigWriteAfterWrite(params.afterWrite ?? params.writeOptions?.afterWrite);
+  if (!await tryWriteSingleTopLevelIncludeMutation({
+${properties}
+  })) await (params.io?.writeConfigFile ?? writeConfigFile)(params.nextConfig, {
+    baseSnapshot: snapshot,
+    ...writeOptions,
+    ...params.writeOptions,
+    afterWrite
+  });
+  return { path: snapshot.path, previousHash };
+}
+`;
+}
+
 describe("rcf_patch.py", () => {
   it("patches replaceConfigFile with either snapshot/nextConfig property order", () => {
     for (const properties of [
@@ -53,8 +75,21 @@ describe("rcf_patch.py", () => {
       const { result, patched } = runPatch(replaceConfigFileBody(properties));
       expect(result.status).toBe(0);
       expect(patched).toContain("OPENSHELL_SANDBOX");
-      expect(patched).toContain("try { if (!await tryWriteSingleTopLevelIncludeMutation");
+      expect(patched).toMatch(/try \{ if \(!\s*await tryWriteSingleTopLevelIncludeMutation/);
     }
+  });
+
+  it("patches the OpenClaw 2026.5.7 params.io write block", () => {
+    const { result, patched } = runPatch(
+      currentReplaceConfigFileBody(
+        "    snapshot,\n    nextConfig: params.nextConfig,\n    afterWrite,\n    writeOptions: params.writeOptions ?? writeOptions,\n    io: params.io",
+      ),
+    );
+
+    expect(result.status).toBe(0);
+    expect(patched).toContain("OPENSHELL_SANDBOX");
+    expect(patched).toContain("params.io?.writeConfigFile ?? writeConfigFile");
+    expect(patched).toContain("afterWrite");
   });
 
   it("ignores braces inside strings and comments when locating replaceConfigFile", () => {

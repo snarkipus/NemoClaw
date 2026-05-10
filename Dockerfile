@@ -43,7 +43,6 @@ RUN apt-mark manual procps 2>/dev/null || true \
     fi \
     && ps --version
 
-
 # Copy built plugin and blueprint into the sandbox
 COPY --from=builder /opt/nemoclaw/dist/ /opt/nemoclaw/dist/
 COPY nemoclaw/openclaw.plugin.json /opt/nemoclaw/
@@ -133,12 +132,24 @@ RUN set -eu; \
 # runtime and image ENV vars set by Dockerfile are stripped. OPENSHELL_SANDBOX
 # is the only marker reliably present in the runtime.
 #
+# === Patch 6: treat inference.local as an OpenShell-managed endpoint ===
+# OpenClaw 2026.5.7 scopes trusted web-search provider calls with a hostname
+# allowlist for fake-IP DNS safety. That allowlist still flows through the
+# generic .local private-hostname classifier, so NemoClaw's managed xAI
+# web_search endpoint (https://inference.local/v1) fails with
+# "Blocked hostname or private/internal/special-use IP address" before the
+# request can reach OpenShell's policy-enforced proxy. Exempt only the exact
+# OpenShell virtual hostname, only when OPENSHELL_SANDBOX is present.
+#
 # === Removal criteria ===
 # Patch 1: drop when OpenClaw deprecates withStrictGuardedFetchMode or
 #   when all media-fetch callsites unconditionally pass useEnvProxy.
 # Patch 2: drop when OpenClaw fixes assertExplicitProxyAllowed to skip the
 #   target hostname allowlist for the proxy hostname check (or exposes config
 #   to disable the check).
+# Patch 6: drop when OpenClaw exposes a provider-web-search SSRF policy seam or
+#   otherwise treats operator-configured trusted endpoints such as
+#   inference.local as scoped private/special-use hosts.
 #
 # SYNC WITH OPENCLAW: these patches grep for specific exports and function
 # definitions in the compiled OpenClaw dist (withStrictGuardedFetchMode,
@@ -195,25 +206,23 @@ RUN set -eu; \
     test -n "$rcf_file" || { echo "ERROR: replaceConfigFile function not found in OpenClaw dist" >&2; exit 1; }; \
     python3 /usr/local/lib/nemoclaw/rcf_patch.py "$rcf_file"; \
     grep -REq --include='*.js' 'OPENSHELL_SANDBOX.*EACCES' "$rcf_file" || { echo "ERROR: Patch 4 (replaceConfigFile EACCES) not applied" >&2; exit 1; }; \
-    # --- Patch 5: bump default WS handshake timeout 10s -> 60s (#2484) --- \
-    # OpenClaw's WS connect handshake has a hard-coded 10s timeout on both \
-    # client and server. Server-side connect-handler processing can exceed \
-    # 10s under load (multiple concurrent connects on slow CI infra), \
-    # causing `openclaw agent --json` to fail with "gateway timeout after \
-    # 10000ms" and TC-SBX-02 to hit its 90s SSH timeout. \
-    # \
-    # Both env vars (OPENCLAW_HANDSHAKE_TIMEOUT_MS, \
-    # OPENCLAW_CONNECT_CHALLENGE_TIMEOUT_MS) are clamped at the same \
-    # DEFAULT_PREAUTH_HANDSHAKE_TIMEOUT_MS constant, so we patch the \
-    # constant itself.  Affects both client.js (used by openclaw CLI) and \
-    # server.impl.js (gateway side). \
-    # \
-    # Removal criteria: drop when openclaw fixes the underlying connect \
-    # latency, or exposes the timeout as an unbounded env override. \
-    hto_files="$(grep -RIlE --include='*.js' 'DEFAULT_PREAUTH_HANDSHAKE_TIMEOUT_MS = 1e4' "$OC_DIST")"; \
-    test -n "$hto_files" || { echo "ERROR: handshake-timeout constant not found" >&2; exit 1; }; \
-    printf '%s\n' "$hto_files" | xargs sed -i -E 's|DEFAULT_PREAUTH_HANDSHAKE_TIMEOUT_MS = 1e4|DEFAULT_PREAUTH_HANDSHAKE_TIMEOUT_MS = 6e4|g'; \
-    if grep -REq --include='*.js' 'DEFAULT_PREAUTH_HANDSHAKE_TIMEOUT_MS = 1e4' "$OC_DIST"; then echo "ERROR: Patch 5 left a 1e4 constant" >&2; exit 1; fi
+    # --- Patch 5: cron local-provider preflight must use proxy DNS (#2484) --- \
+    # Isolated cron jobs preflight local providers before agent execution. \
+    # Without trusted_env_proxy mode, the probe resolves inference.local \
+    # directly inside the sandbox and skips jobs with getaddrinfo EAI_AGAIN. \
+    # OpenShell owns inference.local behind the sandbox proxy, so cron must use \
+    # the same proxy-aware fetch path as normal agent inference. \
+    mp_file="$(grep -RIlE --include='model-preflight.runtime-*.js' 'auditContext: "cron-model-provider-preflight"' "$OC_DIST")"; \
+    test -n "$mp_file" || { echo "ERROR: cron model preflight runtime not found" >&2; exit 1; }; \
+    for f in $mp_file; do \
+        grep -q 'mode: "trusted_env_proxy"' "$f" || sed -i 's/auditContext: "cron-model-provider-preflight"/auditContext: "cron-model-provider-preflight",\n\t\tmode: "trusted_env_proxy"/' "$f"; \
+        grep -q 'mode: "trusted_env_proxy"' "$f" || { echo "ERROR: Patch 5 (cron trusted_env_proxy) not applied to $f" >&2; exit 1; }; \
+    done; \
+    # --- Patch 6: allow OpenShell-managed inference.local trusted endpoint --- \
+    ssrf_file="$(grep -RIlE --include='ssrf-*.js' 'function isBlockedHostnameNormalized\(normalized\)' "$OC_DIST")"; \
+    test -n "$ssrf_file" || { echo "ERROR: SSRF hostname classifier not found" >&2; exit 1; }; \
+    printf '%s\n' "$ssrf_file" | xargs sed -i -E 's|(function isBlockedHostnameNormalized\(normalized\) \{)|\1 if (process.env.OPENSHELL_SANDBOX === "1" \&\& normalized === "inference.local") return false; /* nemoclaw: OpenShell managed inference route, see Dockerfile */ |'; \
+    grep -REq --include='ssrf-*.js' 'normalized === "inference\.local"\) return false; /\* nemoclaw: OpenShell managed inference route' "$OC_DIST" || { echo "ERROR: Patch 6 (inference.local SSRF exception) not applied" >&2; exit 1; }
 
 # Set up blueprint for local resolution.
 # Blueprints are immutable at runtime; DAC protection (root ownership) is applied
