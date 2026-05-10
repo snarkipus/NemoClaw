@@ -78,6 +78,19 @@ network_policies:
     binaries:
       - { path: "/**" }
 
+  # ── Managed inference route ──────────────────────────────────────────
+  # Mirror of the `managed_inference` block in openclaw-sandbox.yaml.
+  managed_inference:
+    name: managed_inference
+    endpoints:
+      - host: inference.local
+        port: 443
+        protocol: rest
+        enforcement: enforce
+        access: full
+    binaries:
+      - { path: "/**" }
+
   github:
     name: github
     endpoints:

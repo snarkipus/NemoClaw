@@ -130,9 +130,9 @@ selectFromList(items, options)
 
 describe("policies", () => {
   describe("listPresets", () => {
-    it("returns all 12 presets", () => {
+    it("returns all 17 presets", () => {
       const presets = policies.listPresets();
-      expect(presets.length).toBe(12);
+      expect(presets.length).toBe(17);
     });
 
     it("each preset has name and description", () => {
@@ -148,18 +148,23 @@ describe("policies", () => {
         .map((p: { name: string }) => p.name)
         .sort();
       const expected = [
+        "agentmail",
         "brave",
         "brew",
         "discord",
+        "firecrawl",
         "github",
         "huggingface",
         "jira",
         "local-inference",
         "npm",
+        "obsidian",
         "outlook",
         "pypi",
+        "qmd",
         "slack",
         "telegram",
+        "xai",
       ];
       expect(names).toEqual(expected);
     });
@@ -186,6 +191,24 @@ describe("policies", () => {
         expect(content).toContain("/usr/local/bin/node");
         expect(content).toContain("/usr/bin/node");
       }
+    });
+
+    it("agentmail preset allows mark-read PATCH requests", () => {
+      const content = requirePresetContent(policies.loadPreset("agentmail"));
+      const parsed = YAML.parse(content);
+      const apiEndpoint = parsed.network_policies.agentmail.endpoints.find(
+        (item: { host?: string }) => item.host === "api.agentmail.to",
+      );
+      expect(apiEndpoint?.rules).toContainEqual({ allow: { method: "PATCH", path: "/**" } });
+    });
+
+    it("xai preset targets native xAI endpoints, not managed inference", () => {
+      const content = requirePresetContent(policies.loadPreset("xai"));
+      const parsed = YAML.parse(content);
+      const hosts = parsed.network_policies.xai.endpoints.map((item: { host: string }) => item.host);
+
+      expect(hosts).toEqual(["api.x.ai"]);
+      expect(hosts).not.toContain("inference.local");
     });
 
     it("local-inference preset targets host.openshell.internal on Ollama, proxy, and vLLM ports", () => {
@@ -793,6 +816,35 @@ describe("policies", () => {
         /host:\s*api\.telegram\.org[\s\S]*?protocol:\s*rest[\s\S]*?enforcement:\s*enforce/,
       );
       expect(content).not.toMatch(/host:\s*api\.telegram\.org[\s\S]*?tls:/);
+    });
+
+    it("keeps messaging presets out of the default sandbox baseline", () => {
+      const content = fs.readFileSync(
+        path.join(REPO_ROOT, "nemoclaw-blueprint/policies/openclaw-sandbox.yaml"),
+        "utf8",
+      );
+      const parsed = YAML.parse(content);
+
+      expect(parsed.network_policies.telegram).toBeUndefined();
+      expect(parsed.network_policies.telegram_bot).toBeUndefined();
+      expect(parsed.network_policies.discord).toBeUndefined();
+      expect(parsed.network_policies.slack).toBeUndefined();
+    });
+
+    it("keeps managed inference in default and permissive policies", () => {
+      for (const policyFile of ["openclaw-sandbox.yaml", "openclaw-sandbox-permissive.yaml"]) {
+        const content = fs.readFileSync(
+          path.join(REPO_ROOT, "nemoclaw-blueprint/policies", policyFile),
+          "utf8",
+        );
+        const parsed = YAML.parse(content);
+        const endpoint = parsed.network_policies.managed_inference.endpoints.find(
+          (item: { host?: string }) => item.host === "inference.local",
+        );
+
+        expect(endpoint).toBeDefined();
+        expect(endpoint.port).toBe(443);
+      }
     });
 
     it("pypi preset allows HEAD for pip lazy-wheel metadata checks", () => {
