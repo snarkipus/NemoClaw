@@ -103,7 +103,8 @@ _TOOL_REDIRECTS=(
   'XDG_RUNTIME_DIR=/tmp/.runtime'
   'NODE_REPL_HISTORY=/tmp/.node_repl_history'
   'HISTFILE=/tmp/.bash_history'
-  'GIT_CONFIG_GLOBAL=/tmp/.gitconfig'
+  # Git identity and credential helper config must survive reboot; /tmp does not.
+  'GIT_CONFIG_GLOBAL=/sandbox/.gitconfig'
   'GNUPGHOME=/tmp/.gnupg'
   'PYTHONUSERBASE=/tmp/.local'
   'PYTHON_HISTORY=/tmp/.python_history'

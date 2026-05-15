@@ -660,7 +660,7 @@ describe("service environment", () => {
         // Tool cache redirects should be present (#804)
         expect(envFile).toContain("npm_config_cache");
         expect(envFile).toContain("HISTFILE");
-        expect(envFile).toContain("GIT_CONFIG_GLOBAL");
+        expect(envFile).toContain("GIT_CONFIG_GLOBAL=/sandbox/.gitconfig");
         // XDG redirects prevent tools from writing to read-only /sandbox (#804)
         expect(envFile).toContain("XDG_CONFIG_HOME=/tmp/.config");
         expect(envFile).toContain("XDG_DATA_HOME=/tmp/.local/share");
