@@ -477,16 +477,27 @@ describe("github preset", () => {
     expect(np && "github" in np).toBe(true);
   });
 
-  it("regression #2179: github preset only advertises the installed git binary", () => {
+  it("includes gh CLI endpoints when the sandbox image installs gh", () => {
     const parsed = loadYaml<PolicyPreset>(PRESET_PATH);
     const meta = parsed.preset;
-    expect(meta?.description).toBe("GitHub.com and GitHub API access (git)");
-    expect(meta?.description ?? "").not.toMatch(/\bgh\b/);
+    expect(meta?.description).toBe(
+      "GitHub.com, GitHub API, raw GitHub content, and gh CLI access",
+    );
 
     const binaries = (parsed.network_policies?.github?.binaries ?? [])
       .map((binary) => binary.path)
       .sort();
-    expect(binaries).toEqual(["/usr/bin/git"]);
+    expect(binaries).toEqual([
+      "/usr/bin/gh",
+      "/usr/bin/git",
+      "/usr/bin/node",
+      "/usr/local/bin/node",
+    ]);
+    const endpoints = (parsed.network_policies?.github?.endpoints ?? []).map(
+      (endpoint) => endpoint.host,
+    );
+    expect(endpoints).toContain("raw.githubusercontent.com");
+    expect(endpoints).toContain("cafe.github.com");
   });
 });
 

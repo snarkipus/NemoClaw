@@ -92,6 +92,11 @@ fi
 # shellcheck source=scripts/lib/sandbox-init.sh
 source "$_SANDBOX_INIT"
 
+_NEMOCLAW_START_PATH="/usr/local/bin/nemoclaw-start"
+if [ ! -x "$_NEMOCLAW_START_PATH" ]; then
+  _NEMOCLAW_START_PATH="$(command -v nemoclaw-start 2>/dev/null || printf '%s' /usr/local/bin/nemoclaw-start)"
+fi
+
 # Harden: limit process count to prevent fork bombs (ref: #809)
 # Best-effort: some container runtimes (e.g., brev) restrict ulimit
 # modification, returning "Invalid argument". Warn but don't block startup.
@@ -122,7 +127,8 @@ _TOOL_REDIRECTS=(
   'XDG_RUNTIME_DIR=/tmp/.runtime'
   'NODE_REPL_HISTORY=/tmp/.node_repl_history'
   'HISTFILE=/tmp/.bash_history'
-  'GIT_CONFIG_GLOBAL=/tmp/.gitconfig'
+  # Git identity and credential helper config must survive reboot; /tmp does not.
+  'GIT_CONFIG_GLOBAL=/sandbox/.gitconfig'
   'GNUPGHOME=/tmp/.gnupg'
   'PYTHONUSERBASE=/tmp/.local'
   'PYTHON_HISTORY=/tmp/.python_history'
@@ -1644,14 +1650,122 @@ PROXYEOF
       _escaped_gateway_url="$(printf '%s' "$OPENCLAW_GATEWAY_URL" | sed "s/'/'\\\\''/g")"
       printf "export OPENCLAW_GATEWAY_URL='%s'\n" "$_escaped_gateway_url"
     fi
+    printf 'export NEMOCLAW_START_RESTART_PATH=%q\n' "${_NEMOCLAW_START_PATH:-/usr/local/bin/nemoclaw-start}"
     if [ -n "${OPENCLAW_GATEWAY_TOKEN:-}" ]; then
       _escaped_gateway_token="$(printf '%s' "$OPENCLAW_GATEWAY_TOKEN" | sed "s/'/'\\\\''/g")"
       printf "export OPENCLAW_GATEWAY_TOKEN='%s'\n" "$_escaped_gateway_token"
     fi
     cat <<'GUARDENVEOF'
 # nemoclaw-configure-guard begin
+nemoclaw_gateway_restart() {
+  echo "NemoClaw: restarting the sandbox-local OpenClaw gateway via nemoclaw-start." >&2
+  echo "NemoClaw: this replaces OpenClaw's native gateway restart path inside sandboxes." >&2
+
+  rm -f /tmp/nemoclaw-start.log /tmp/gateway.log /tmp/nemoclaw-*.js /tmp/.nemoclaw-*.tmp.* 2>/dev/null || true
+
+  python3 - <<'PY'
+from pathlib import Path
+import os
+import signal
+import socket
+import subprocess
+import sys
+import time
+
+
+def cmdline_for(proc):
+    try:
+        return proc.joinpath("cmdline").read_bytes().replace(b"\x00", b" ").decode("utf-8", "replace").strip()
+    except Exception:
+        return ""
+
+
+def restart_target_pids():
+    pids = []
+    launcher_pids = []
+    for proc in Path("/proc").iterdir():
+        if not proc.name.isdigit():
+            continue
+        pid = int(proc.name)
+        if pid in {os.getpid(), os.getppid()}:
+            continue
+        cmdline = cmdline_for(proc)
+        if not cmdline:
+            continue
+        if "openclaw-gateway" in cmdline or "openclaw gateway" in cmdline:
+            pids.append(pid)
+        elif "nemoclaw-start" in cmdline:
+            launcher_pids.append(pid)
+    # Keep the oldest launcher as the container supervisor when present; stale
+    # duplicate launchers are safe to stop before relaunching the gateway.
+    pids.extend(sorted(launcher_pids)[1:])
+    return sorted(set(pids))
+
+
+def port_open():
+    for host in ("127.0.0.1", "::1"):
+        try:
+            with socket.create_connection((host, 18789), timeout=0.5):
+                return True
+        except Exception:
+            pass
+    return False
+
+
+for pid in restart_target_pids():
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+
+deadline = time.time() + 20
+while time.time() < deadline and (restart_target_pids() or port_open()):
+    time.sleep(0.5)
+
+remaining = restart_target_pids()
+if remaining:
+    print(f"NemoClaw: gateway processes did not stop cleanly: {remaining}", file=sys.stderr)
+    return_code = 1
+else:
+    log = open("/tmp/nemoclaw-start.manual.log", "ab", buffering=0)
+    restart_cmd = os.environ.get("NEMOCLAW_START_RESTART_PATH", "/usr/local/bin/nemoclaw-start")
+    subprocess.Popen(
+        ["nohup", restart_cmd],
+        stdout=log,
+        stderr=subprocess.STDOUT,
+        stdin=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    deadline = time.time() + int(os.environ.get("NEMOCLAW_GATEWAY_RESTART_WAIT_SECS", "45"))
+    while time.time() < deadline:
+        if port_open():
+            print("NemoClaw: gateway restart completed; 127.0.0.1:18789 is listening.", file=sys.stderr)
+            return_code = 0
+            break
+        time.sleep(1)
+    else:
+        print("NemoClaw: gateway restart did not open 127.0.0.1:18789 before timeout.", file=sys.stderr)
+        return_code = 1
+
+sys.exit(return_code)
+PY
+}
+
 openclaw() {
   case "$1" in
+    gateway)
+      case "${2:-}" in
+        restart)
+          shift 2
+          if [ "$#" -ne 0 ]; then
+            echo "Error: 'openclaw gateway restart' does not accept extra arguments inside NemoClaw sandboxes." >&2
+            return 2
+          fi
+          nemoclaw_gateway_restart
+          return $?
+          ;;
+      esac
+      ;;
     configure)
       echo "Error: 'openclaw configure' cannot modify config inside the sandbox." >&2
       echo "Changes inside the sandbox do not persist across rebuilds." >&2

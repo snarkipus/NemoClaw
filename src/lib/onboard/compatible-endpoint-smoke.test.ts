@@ -20,17 +20,18 @@ import {
 } from "./compatible-endpoint-smoke";
 
 describe("compatible endpoint sandbox smoke helpers", () => {
-  function writeSmokeConfig(tmpDir: string, model: string): string {
+  function writeSmokeConfig(tmpDir: string, model: string, providerKey = "inference"): string {
     const configDir = path.join(tmpDir, ".openclaw");
     fs.mkdirSync(configDir, { recursive: true });
     const configPath = path.join(configDir, "openclaw.json");
+    const primary = `${providerKey}/${model}`;
     fs.writeFileSync(
       configPath,
       JSON.stringify({
-        agents: { defaults: { model: { primary: `inference/${model}` } } },
+        agents: { defaults: { model: { primary } } },
         models: {
           providers: {
-            inference: {
+            [providerKey]: {
               baseUrl: "https://inference.local/v1",
               apiKey: "unused",
             },
@@ -104,11 +105,32 @@ ${bodyForCall}
 
     expect(script).toContain("OPENCLAW_CONFIG_OK");
     expect(script).toContain("INFERENCE_SMOKE_OK");
-    expect(script).toContain("models.providers.inference");
+    expect(script).toContain("models.providers.%s");
     expect(script).toContain("https://inference.local/v1/chat/completions");
     expect(script).toContain("INITIAL_MAX_TOKENS=256");
     expect(script).toContain("RETRY_MAX_TOKENS=1024");
     expect(script).toContain("MODEL='provider/model'\\'''");
+  });
+
+  it("accepts provider-scoped managed inference refs such as openai/gpt-5.5", () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-compat-smoke-openai-ref-"));
+    const model = "gpt-5.5";
+    const configPath = writeSmokeConfig(tmpDir, model, "openai");
+    const { binDir } = writeFakeCurl(
+      tmpDir,
+      String.raw`
+cat <<'JSON'
+{"id":"ok","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"PONG"},"finish_reason":"stop"}]}
+JSON
+`,
+    );
+    const script = buildCompatibleEndpointSandboxSmokeScript(model, { configPath });
+
+    const result = runSmokeScript(script, tmpDir, binDir);
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("OPENCLAW_CONFIG_OK");
+    expect(result.stdout).toContain("INFERENCE_SMOKE_OK PONG");
   });
 
   it("retries a reasoning-only length response before failing the sandbox smoke", () => {

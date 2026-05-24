@@ -208,18 +208,22 @@ if not isinstance(providers, dict):
 if "deepinfra" in providers:
     die("openclaw.json contains a direct deepinfra provider; expected managed inference provider")
 
-provider = providers.get("${MANAGED_PROVIDER_ID}")
-if not isinstance(provider, dict):
-    die("openclaw.json missing models.providers.${MANAGED_PROVIDER_ID}")
-if provider.get("baseUrl") != "${INFERENCE_ROUTE_URL}":
-    die("models.providers.${MANAGED_PROVIDER_ID}.baseUrl is %r; expected ${INFERENCE_ROUTE_URL}" % provider.get("baseUrl"))
-if provider.get("apiKey") != "unused":
-    die("models.providers.${MANAGED_PROVIDER_ID}.apiKey must remain the non-secret placeholder 'unused'")
-
 primary = cfg.get("agents", {}).get("defaults", {}).get("model", {}).get("primary")
-expected_primary = "${MANAGED_PROVIDER_ID}/" + model
-if primary != expected_primary:
-    die("agents.defaults.model.primary is %r; expected %r" % (primary, expected_primary))
+if not isinstance(primary, str) or not primary.strip():
+    die("agents.defaults.model.primary is missing")
+
+expected_legacy_primary = "${MANAGED_PROVIDER_ID}/" + model
+if primary != expected_legacy_primary and primary != model and not primary.endswith("/" + model):
+    die("agents.defaults.model.primary is %r; expected %r or another provider-scoped ref ending in /%s" % (primary, expected_legacy_primary, model))
+
+provider_key = primary.split("/", 1)[0] if "/" in primary else "${MANAGED_PROVIDER_ID}"
+provider = providers.get(provider_key)
+if not isinstance(provider, dict):
+    die("openclaw.json missing models.providers.%s" % provider_key)
+if provider.get("baseUrl") != "${INFERENCE_ROUTE_URL}":
+    die("models.providers.%s.baseUrl is %r; expected ${INFERENCE_ROUTE_URL}" % (provider_key, provider.get("baseUrl")))
+if provider.get("apiKey") != "unused":
+    die("models.providers.%s.apiKey must remain the non-secret placeholder 'unused'" % provider_key)
 
 print("OPENCLAW_CONFIG_OK")
 PYCFG

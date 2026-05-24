@@ -27,6 +27,8 @@ Environment variables:
                                         disable). Empty/unset preserves the OpenClaw default.
     NEMOCLAW_INFERENCE_COMPAT_B64       Base64-encoded inference compat JSON
     NEMOCLAW_MESSAGING_CHANNELS_B64     Base64-encoded channel list
+    NEMOCLAW_DISABLE_CHANNELS_AFTER_ONBOARD
+                                        Comma-separated channels to scaffold but disable
     NEMOCLAW_MESSAGING_ALLOWED_IDS_B64  Base64-encoded allowed IDs map (Slack IDs cover
                                         DMs and channel @mentions)
     NEMOCLAW_DISCORD_GUILDS_B64         Base64-encoded Discord guild config
@@ -541,22 +543,29 @@ def build_config(env: dict | None = None) -> dict:
         return f"openshell:resolve:env:{env_key}"
 
     _ch_cfg = {}
+    disabled_after_onboard = {
+        channel.strip()
+        for channel in env.get("NEMOCLAW_DISABLE_CHANNELS_AFTER_ONBOARD", "").split(",")
+        if channel.strip()
+    }
     for ch in msg_channels:
         if ch == "whatsapp":
             _ch_cfg[ch] = {
                 "accounts": {
                     "default": {
-                        "enabled": True,
+                        "enabled": ch not in disabled_after_onboard,
                         "healthMonitor": {"enabled": False},
                     }
                 }
             }
+            if ch in disabled_after_onboard:
+                _ch_cfg[ch]["enabled"] = False
             continue
         if ch not in _token_keys:
             continue
         account = {
             _token_keys[ch]: _placeholder(ch, _env_keys[ch]),
-            "enabled": True,
+            "enabled": ch not in disabled_after_onboard,
             "healthMonitor": {"enabled": False},
         }
         if ch == "slack":
@@ -578,6 +587,8 @@ def build_config(env: dict | None = None) -> dict:
                     }
                 }
         _ch_cfg[ch] = {"accounts": {"default": account}}
+        if ch in disabled_after_onboard:
+            _ch_cfg[ch]["enabled"] = False
 
     # WeChat (openclaw-weixin) is NOT added to channels.* here in build
     # contexts where the plugin has not been installed yet — writing it upfront
@@ -643,30 +654,93 @@ def build_config(env: dict | None = None) -> dict:
     )
     allow_insecure = parsed.scheme == "http"
 
-    providers = {
-        provider_key: {
+    rich_openshell_profile = provider_key == "xiaomi" or (
+        provider_key == "openai" and model in {"gpt-5.5", "openai/gpt-5.5"}
+    ) or (
+        provider_key == "inference"
+        and model in {"gpt-5.5", "openai/gpt-5.5", "grok-4.3"}
+        and inference_base_url.rstrip("/") == "https://inference.local/v1"
+    )
+    gpt55_openshell_profile = rich_openshell_profile and model in {
+        "gpt-5.5",
+        "openai/gpt-5.5",
+    }
+
+    def _provider_config(
+        model_name: str,
+        cost: dict | None = None,
+        api_key: str = "unused",
+        model_id: str | None = None,
+        compat: dict | None = None,
+        api: str | None = None,
+        inputs: list[str] | None = None,
+        reasoning_value: bool | None = None,
+        context_window_value: int | None = None,
+        max_tokens_value: int | None = None,
+    ) -> dict:
+        model_compat = compat if compat is not None else inference_compat
+        return {
             "baseUrl": inference_base_url,
-            "apiKey": "unused",
-            "api": inference_api,
+            "apiKey": api_key,
+            "api": api or inference_api,
             "models": [
                 {
-                    **({"compat": inference_compat} if inference_compat else {}),
-                    "id": model,
-                    "name": primary_model_ref,
-                    "reasoning": reasoning,
-                    "input": inference_inputs,
-                    "cost": {
+                    **({"compat": model_compat} if model_compat else {}),
+                    "id": model_id or model,
+                    "name": model_name,
+                    "reasoning": reasoning if reasoning_value is None else reasoning_value,
+                    "input": inputs or inference_inputs,
+                    "cost": cost or {
                         "input": 0,
                         "output": 0,
                         "cacheRead": 0,
                         "cacheWrite": 0,
                     },
-                    "contextWindow": context_window,
-                    "maxTokens": max_tokens,
+                    "contextWindow": context_window_value or context_window,
+                    "maxTokens": max_tokens_value or max_tokens,
                 }
             ],
         }
-    }
+
+    if rich_openshell_profile:
+        primary_model_ref = "openai/gpt-5.5" if gpt55_openshell_profile else "grok-4.3"
+        providers = {
+            "xai": _provider_config(
+                "Grok 4.3",
+                api="openai-responses",
+                model_id="grok-4.3",
+                compat={},
+                inputs=["text", "image"],
+                reasoning_value=True,
+                context_window_value=1000000,
+                max_tokens_value=64000,
+                cost={"input": 1.25, "output": 2.5, "cacheRead": 0.2, "cacheWrite": 0},
+            ),
+            "xiaomi": _provider_config(
+                "Xiaomi MiMo V2.5 Pro",
+                api="openai-completions",
+                model_id="mimo-v2.5-pro",
+                compat={"supportsStore": False},
+                inputs=["text"],
+                reasoning_value=False,
+                context_window_value=131072,
+                max_tokens_value=4096,
+                cost={"input": 1, "output": 3, "cacheRead": 0.2, "cacheWrite": 0},
+            ),
+        }
+        if gpt55_openshell_profile:
+            providers["openai"] = _provider_config(
+                "GPT-5.5",
+                api="openai-responses",
+                model_id="openai/gpt-5.5",
+                compat={"supportsStore": False},
+                inputs=["text", "image"],
+                reasoning_value=True,
+                context_window_value=400000,
+                max_tokens_value=16192,
+            )
+    else:
+        providers = {provider_key: _provider_config(primary_model_ref)}
 
     # OpenClaw stages runtime dependencies for every bundled enabledByDefault
     # provider plugin. NemoClaw bakes one model provider into openclaw.json, so
@@ -699,6 +773,60 @@ def build_config(env: dict | None = None) -> dict:
     for _plugin_id, _provider_keys in _bundled_provider_plugins.items():
         if provider_key not in _provider_keys:
             plugin_entries[_plugin_id] = {"enabled": False}
+    xai_plugin_base_url = env.get("NEMOCLAW_XAI_PLUGIN_BASE_URL", "https://api.x.ai/v1")
+
+    if rich_openshell_profile:
+        plugin_entries["xai"] = {
+            "enabled": True,
+            "config": {
+                "webSearch": {
+                    "apiKey": "openshell:resolve:env:XAI_API_KEY",
+                    "baseUrl": xai_plugin_base_url,
+                },
+                "xSearch": {"baseUrl": xai_plugin_base_url, "enabled": True},
+                "codeExecution": {"enabled": True},
+            },
+        }
+        plugin_entries["xiaomi"] = {"enabled": True}
+        plugin_entries["firecrawl"] = {
+            "enabled": True,
+            "config": {
+                "webFetch": {
+                    "apiKey": "openshell:resolve:env:FIRECRAWL_API_KEY",
+                    "baseUrl": "https://api.firecrawl.dev",
+                    "maxAgeMs": 172800000,
+                    "onlyMainContent": True,
+                    "timeoutSeconds": 60,
+                }
+            },
+        }
+        plugin_entries["memory-core"] = {
+            "enabled": True,
+            "config": {
+                "dreaming": {
+                    "enabled": True,
+                    "frequency": "0 */12 * * *",
+                    "timezone": "America/New_York",
+                }
+            },
+        }
+        plugin_entries["memory-wiki"] = {
+            "enabled": True,
+            "config": {
+                "bridge": {
+                    "enabled": True,
+                    "followMemoryEvents": True,
+                    "indexDailyNotes": True,
+                    "indexDreamReports": True,
+                    "indexMemoryRoot": True,
+                    "readMemoryArtifacts": True,
+                },
+                "context": {"includeCompiledDigestPrompt": False},
+                "search": {"backend": "shared", "corpus": "all"},
+                "vault": {"renderMode": "obsidian"},
+                "vaultMode": "bridge",
+            },
+        }
 
     plugins = {"entries": plugin_entries}
     plugin_load_paths: list[str] = []
@@ -771,6 +899,28 @@ def build_config(env: dict | None = None) -> dict:
             "auth": {"token": ""},
         },
     }
+
+    if rich_openshell_profile:
+        defaults = config["agents"]["defaults"]
+        defaults.setdefault(
+            "heartbeat",
+            {
+                "every": "30m",
+                "lightContext": True,
+                "isolatedSession": True,
+                "activeHours": {"start": "08:00", "end": "23:00"},
+                "target": "last",
+            },
+        )
+        defaults["userTimezone"] = "America/New_York"
+        if gpt55_openshell_profile:
+            defaults["models"] = {
+                "openai/gpt-5.5": {
+                    "params": {"responsesIncludeEncryptedReasoningContent": True}
+                }
+            }
+        config["env"] = {"GITHUB_TOKEN": "openshell:resolve:env:GITHUB_TOKEN"}
+        config["memory"] = {"backend": "qmd", "qmd": {"searchMode": "vsearch"}}
 
     if emit_openclaw_managed_proxy:
         config["proxy"] = {

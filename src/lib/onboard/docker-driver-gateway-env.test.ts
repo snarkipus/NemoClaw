@@ -72,6 +72,7 @@ describe("buildDockerGatewayDebEnvFile", () => {
         OPENSHELL_SERVER_PORT: "8990",
         OPENSHELL_DISABLE_TLS: "true",
         OPENSHELL_DISABLE_GATEWAY_AUTH: "true",
+        OPENSHELL_LOCAL_TLS_DIR: "/tmp/nemoclaw-gateway/tls",
         OPENSHELL_DB_URL: "sqlite:/tmp/openshell.db",
         OPENSHELL_GRPC_ENDPOINT: "http://127.0.0.1:8990",
         OPENSHELL_SSH_GATEWAY_HOST: "127.0.0.1",
@@ -86,6 +87,7 @@ describe("buildDockerGatewayDebEnvFile", () => {
     expect(next).toContain("OPENSHELL_BIND_ADDRESS=0.0.0.0\n");
     expect(next).toContain("OPENSHELL_SERVER_PORT=8990\n");
     expect(next).toContain("OPENSHELL_DOCKER_SUPERVISOR_IMAGE=new\n");
+    expect(next).toContain("OPENSHELL_LOCAL_TLS_DIR=/tmp/nemoclaw-gateway/tls\n");
     expect(next).toContain("OPENSHELL_VM_DRIVER_STATE_DIR=/tmp/old-vm-driver\n");
     expect(next).not.toContain("OPENSHELL_BIND_ADDRESS=127.0.0.1");
     expect(next).not.toContain("OPENSHELL_DOCKER_SUPERVISOR_IMAGE=old");

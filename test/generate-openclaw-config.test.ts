@@ -538,6 +538,22 @@ describe("generate-openclaw-config.py: config generation", () => {
     expect(config.channels.discord.accounts.default.proxy).toBeUndefined();
   });
 
+  it("can scaffold selected messaging channels but leave them disabled after onboard", () => {
+    const channels = Buffer.from(JSON.stringify(["telegram", "discord"])).toString("base64");
+    const config = runConfigScript({
+      NEMOCLAW_MESSAGING_CHANNELS_B64: channels,
+      NEMOCLAW_DISABLE_CHANNELS_AFTER_ONBOARD: "discord",
+    });
+
+    expect(config.channels.telegram.accounts.default.enabled).toBe(true);
+    expect(config.channels.telegram.enabled).toBeUndefined();
+    expect(config.channels.discord.enabled).toBe(false);
+    expect(config.channels.discord.accounts.default).toMatchObject({
+      token: "openshell:resolve:env:DISCORD_BOT_TOKEN",
+      enabled: false,
+    });
+  });
+
   it("emits Bolt-shape placeholders for Slack so the SDK's prefix regex passes", () => {
     const channels = Buffer.from(JSON.stringify(["slack"])).toString("base64");
     const config = runConfigScript({ NEMOCLAW_MESSAGING_CHANNELS_B64: channels });
@@ -664,6 +680,123 @@ describe("generate-openclaw-config.py: config generation", () => {
     });
     expect(config.agents.defaults.model.primary).toBe("inference/deepseek-ai/DeepSeek-V4-Flash");
     expect(config.models.providers.deepinfra).toBeUndefined();
+  });
+
+  it("matches the known-good managed GPT-5.5 OpenShell runtime profile", () => {
+    const config = runConfigScript({
+      NEMOCLAW_MODEL: "gpt-5.5",
+      NEMOCLAW_PROVIDER_KEY: "inference",
+      NEMOCLAW_PRIMARY_MODEL_REF: "openai/gpt-5.5",
+      NEMOCLAW_INFERENCE_BASE_URL: "https://inference.local/v1",
+      NEMOCLAW_INFERENCE_API: "openai-responses",
+    });
+
+    expect(Object.keys(config.models.providers).sort()).toEqual(["openai", "xai", "xiaomi"]);
+    expect(config.agents.defaults.model.primary).toBe("openai/gpt-5.5");
+    expect(config.agents.defaults.heartbeat).toEqual({
+      every: "30m",
+      lightContext: true,
+      isolatedSession: true,
+      activeHours: { start: "08:00", end: "23:00" },
+      target: "last",
+    });
+    expect(config.agents.defaults.userTimezone).toBe("America/New_York");
+    expect(config.agents.defaults.models).toEqual({
+      "openai/gpt-5.5": {
+        params: { responsesIncludeEncryptedReasoningContent: true },
+      },
+    });
+    expect(config.models.providers.openai).toMatchObject({
+      baseUrl: "https://inference.local/v1",
+      apiKey: "unused",
+      api: "openai-responses",
+    });
+    expect(config.models.providers.openai.models[0]).toMatchObject({
+      id: "openai/gpt-5.5",
+      name: "GPT-5.5",
+      reasoning: true,
+      input: ["text", "image"],
+      contextWindow: 400000,
+      maxTokens: 16192,
+      compat: { supportsStore: false },
+    });
+    expect(config.models.providers.xai.models[0]).toMatchObject({
+      id: "grok-4.3",
+      name: "Grok 4.3",
+      reasoning: true,
+      input: ["text", "image"],
+      contextWindow: 1000000,
+      maxTokens: 64000,
+    });
+    expect(config.models.providers.xiaomi.models[0]).toMatchObject({
+      id: "mimo-v2.5-pro",
+      name: "Xiaomi MiMo V2.5 Pro",
+      reasoning: false,
+      input: ["text"],
+      contextWindow: 131072,
+      maxTokens: 4096,
+      compat: { supportsStore: false },
+    });
+    expect(config.plugins.entries.xai).toEqual({
+      enabled: true,
+      config: {
+        webSearch: {
+          apiKey: "openshell:resolve:env:XAI_API_KEY",
+          baseUrl: "https://api.x.ai/v1",
+        },
+        xSearch: { baseUrl: "https://api.x.ai/v1", enabled: true },
+        codeExecution: { enabled: true },
+      },
+    });
+    expect(config.plugins.entries.xiaomi).toEqual({ enabled: true });
+    expect(config.plugins.entries.firecrawl.config.webFetch).toMatchObject({
+      apiKey: "openshell:resolve:env:FIRECRAWL_API_KEY",
+      baseUrl: "https://api.firecrawl.dev",
+      maxAgeMs: 172800000,
+      onlyMainContent: true,
+      timeoutSeconds: 60,
+    });
+    expect(config.plugins.entries["memory-core"].config.dreaming).toEqual({
+      enabled: true,
+      frequency: "0 */12 * * *",
+      timezone: "America/New_York",
+    });
+    expect(config.plugins.entries["memory-wiki"].config).toMatchObject({
+      bridge: {
+        enabled: true,
+        followMemoryEvents: true,
+        indexDailyNotes: true,
+        indexDreamReports: true,
+        indexMemoryRoot: true,
+        readMemoryArtifacts: true,
+      },
+      context: { includeCompiledDigestPrompt: false },
+      search: { backend: "shared", corpus: "all" },
+      vault: { renderMode: "obsidian" },
+      vaultMode: "bridge",
+    });
+    expect(config.env).toEqual({ GITHUB_TOKEN: "openshell:resolve:env:GITHUB_TOKEN" });
+    expect(config.memory).toEqual({ backend: "qmd", qmd: { searchMode: "vsearch" } });
+  });
+
+  it("matches the known-good managed Grok/Xiaomi OpenShell provider shape", () => {
+    const config = runConfigScript({
+      NEMOCLAW_MODEL: "grok-4.3",
+      NEMOCLAW_PROVIDER_KEY: "inference",
+      NEMOCLAW_PRIMARY_MODEL_REF: "inference/grok-4.3",
+      NEMOCLAW_INFERENCE_BASE_URL: "https://inference.local/v1",
+      NEMOCLAW_INFERENCE_API: "openai-responses",
+    });
+
+    expect(Object.keys(config.models.providers).sort()).toEqual(["xai", "xiaomi"]);
+    expect(config.agents.defaults.model.primary).toBe("grok-4.3");
+    expect(config.models.providers.xai.models[0].id).toBe("grok-4.3");
+    expect(config.models.providers.xiaomi.models[0]).toMatchObject({
+      id: "mimo-v2.5-pro",
+      name: "Xiaomi MiMo V2.5 Pro",
+      contextWindow: 131072,
+      maxTokens: 4096,
+    });
   });
 
   it("adds Kimi K2.6 compat for managed inference.local chat completions", () => {

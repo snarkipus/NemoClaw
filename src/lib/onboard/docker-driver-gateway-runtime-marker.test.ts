@@ -22,7 +22,7 @@ const expected = {
   },
   endpoint: "http://127.0.0.1:8080",
   gatewayBin: "/usr/local/bin/openshell-gateway",
-  openshellVersion: "0.0.44",
+  openshellVersion: "0.0.47",
   dockerHost: "unix:///Users/me/.colima/default/docker.sock",
   platform: "darwin" as NodeJS.Platform,
   arch: "arm64" as NodeJS.Architecture,

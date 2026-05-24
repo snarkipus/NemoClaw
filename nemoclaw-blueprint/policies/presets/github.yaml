@@ -11,16 +11,13 @@
 # selects this preset during `nemoclaw onboard` (or applies it later via
 # `openshell policy set`).
 #
-# The `gh` CLI was also whitelisted here historically (alongside `git`),
-# but the sandbox base image (Dockerfile.base) only apt-installs `git`,
-# not `gh`. Users selecting this preset and running `gh api …` would hit
-# `bash: gh: command not found`. Dropping `/usr/bin/gh` from the binaries
-# list and from the description keeps the preset surface honest about
-# what's actually usable in the shipped image. Closes #2179.
+# Node-based tools and the GitHub CLI also call the GitHub API and fetch raw
+# GitHub content in the active v12 runtime. The sandbox image installs `gh`, so
+# this preset includes its API and device-flow helper endpoints.
 
 preset:
   name: github
-  description: "GitHub.com and GitHub API access (git)"
+  description: "GitHub.com, GitHub API, raw GitHub content, and gh CLI access"
 
 network_policies:
   github:
@@ -32,5 +29,14 @@ network_policies:
       - host: api.github.com
         port: 443
         access: full
+      - host: raw.githubusercontent.com
+        port: 443
+        access: full
+      - host: cafe.github.com
+        port: 443
+        access: full
     binaries:
       - { path: /usr/bin/git }
+      - { path: /usr/bin/gh }
+      - { path: /usr/local/bin/node }
+      - { path: /usr/bin/node }

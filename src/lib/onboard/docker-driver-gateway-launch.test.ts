@@ -10,6 +10,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildDockerDriverGatewayConfigToml,
   buildDockerDriverGatewayLaunch,
+  ensureDockerDriverGatewayLocalCerts,
   parseGlibcVersionsFromBinaryText,
   shouldUseContainerizedGateway,
 } from "../../../dist/lib/onboard/docker-driver-gateway-launch";
@@ -132,18 +133,43 @@ describe("docker-driver-gateway-launch", () => {
       {
         OPENSHELL_GRPC_ENDPOINT: "http://127.0.0.1:8080",
         OPENSHELL_DOCKER_NETWORK_NAME: "openshell-docker",
-        OPENSHELL_DOCKER_SUPERVISOR_IMAGE: "ghcr.io/nvidia/openshell/supervisor:0.0.44",
+        OPENSHELL_DOCKER_SUPERVISOR_IMAGE: "ghcr.io/nvidia/openshell/supervisor:0.0.47",
       },
       "/home/shadeform/.local/bin/openshell-sandbox",
     );
 
     expect(toml).toContain('compute_drivers = ["docker"]');
+    expect(toml).toContain("allow_unauthenticated_users = true");
     expect(toml).toContain('grpc_endpoint = "http://127.0.0.1:8080"');
     expect(toml).toContain('network_name = "openshell-docker"');
     expect(toml).toContain(
-      'supervisor_image = "ghcr.io/nvidia/openshell/supervisor:0.0.44"',
+      'supervisor_image = "ghcr.io/nvidia/openshell/supervisor:0.0.47"',
     );
     expect(toml).toContain('supervisor_bin = "/home/shadeform/.local/bin/openshell-sandbox"');
+  });
+
+  it("generates local JWT material for sandbox token minting", () => {
+    withTempBinaries(({ dir, gatewayBin }) => {
+      const tlsDir = path.join(dir, "tls");
+      const argsFile = path.join(dir, "args.txt");
+      fs.writeFileSync(
+        gatewayBin,
+        `#!/bin/sh\nprintf '%s\n' "$@" > "${argsFile}"\nmkdir -p "${path.join(tlsDir, "jwt")}"\ntouch "${path.join(tlsDir, "jwt", "signing.pem")}" "${path.join(tlsDir, "jwt", "public.pem")}" "${path.join(tlsDir, "jwt", "kid")}"\n`,
+        { mode: 0o755 },
+      );
+
+      ensureDockerDriverGatewayLocalCerts(gatewayBin, { OPENSHELL_LOCAL_TLS_DIR: tlsDir });
+
+      expect(fs.readFileSync(argsFile, "utf-8").trim().split("\n")).toEqual([
+        "generate-certs",
+        "--output-dir",
+        tlsDir,
+        "--server-san",
+        "127.0.0.1",
+        "--server-san",
+        "localhost",
+      ]);
+    });
   });
 
   it("allows the compatibility gateway bind address to be forced back to loopback", () => {
@@ -171,9 +197,10 @@ describe("docker-driver-gateway-launch", () => {
   });
 
   it("uses the host binary when the gateway ABI is compatible", () => {
-    withTempBinaries(({ dir, gatewayBin }) => {
+    withTempBinaries(({ dir, gatewayBin, sandboxBin }) => {
       const launch = buildDockerDriverGatewayLaunch({
         gatewayBin,
+        sandboxBin,
         stateDir: dir,
         platform: "linux",
         env: {},
@@ -188,6 +215,10 @@ describe("docker-driver-gateway-launch", () => {
         mode: "host",
         processGatewayBin: gatewayBin,
       });
+      expect(launch.env.OPENSHELL_GATEWAY_CONFIG).toBe(path.join(dir, "openshell-gateway.toml"));
+      expect(fs.readFileSync(path.join(dir, "openshell-gateway.toml"), "utf-8")).toContain(
+        "allow_unauthenticated_users = true",
+      );
     });
   });
 });

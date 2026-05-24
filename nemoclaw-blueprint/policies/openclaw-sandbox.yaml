@@ -84,6 +84,7 @@ network_policies:
           - allow: { method: GET, path: "/v1/models/**" }
     binaries:
       - { path: /usr/local/bin/openclaw }
+      - { path: /usr/local/bin/node }
 
   # ── Managed inference route ──────────────────────────────────────────
   # inference.local is the OpenShell gateway's internal virtual hostname;
@@ -147,7 +148,6 @@ network_policies:
           - allow: { method: POST, path: "/**" }
     binaries:
       - { path: /usr/local/bin/openclaw }
-      - { path: /usr/local/bin/node }
 
   openclaw_docs:
     name: openclaw_docs
@@ -160,6 +160,7 @@ network_policies:
           - allow: { method: GET, path: "/**" }
     binaries:
       - { path: /usr/local/bin/openclaw }
+      - { path: /usr/local/bin/node }
 
   # npm registry — needed for `openclaw plugins install` only.
   # Restricted to the openclaw binary so agents cannot use npm directly.

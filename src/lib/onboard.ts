@@ -2835,7 +2835,7 @@ function getOpenShellDockerSupervisorImage(versionOutput: string | null = null):
   if (shouldUseOpenshellDevChannel() || isOpenshellDevVersion(versionOutput)) {
     return "ghcr.io/nvidia/openshell/supervisor:dev";
   }
-  const supportedVersion = installedVersion ?? getBlueprintMaxOpenshellVersion() ?? "0.0.44";
+  const supportedVersion = installedVersion ?? getBlueprintMaxOpenshellVersion() ?? "0.0.47";
   return `ghcr.io/nvidia/openshell/supervisor:${supportedVersion}`;
 }
 
@@ -4066,10 +4066,11 @@ async function startDockerDriverGateway({ exitOnFailure = true, skipSandboxBridg
   }
   if (!gatewayBin) {
     console.error("  OpenShell Docker-driver gateway binary not found.");
-    console.error("  Install OpenShell v0.0.44, or set NEMOCLAW_OPENSHELL_GATEWAY_BIN.");
+    console.error("  Install OpenShell v0.0.47, or set NEMOCLAW_OPENSHELL_GATEWAY_BIN.");
     if (exitOnFailure) process.exit(1);
     throw new Error("OpenShell gateway binary not found");
   }
+  dockerDriverGatewayLaunch.ensureDockerDriverGatewayLocalCerts(gatewayBin, gatewayEnv);
 
   const existingPid = getDockerDriverGatewayPid() ?? portListenerPid;
   if (existingPid !== null && isPidAlive(existingPid)) {
@@ -4730,6 +4731,28 @@ async function createSandbox(
       token: getCredential(webSearch.BRAVE_API_KEY_ENV),
     });
   }
+  messagingTokenDefs.push(
+    {
+      name: `${sandboxName}-github`,
+      envKey: "GITHUB_TOKEN",
+      token: getMessagingToken("GITHUB_TOKEN"),
+    },
+    {
+      name: `${sandboxName}-xai-search`,
+      envKey: "XAI_API_KEY",
+      token: getMessagingToken("XAI_API_KEY"),
+    },
+    {
+      name: `${sandboxName}-firecrawl`,
+      envKey: "FIRECRAWL_API_KEY",
+      token: getMessagingToken("FIRECRAWL_API_KEY"),
+    },
+    {
+      name: `${sandboxName}-agentmail`,
+      envKey: "AGENTMAIL_API_KEY",
+      token: getMessagingToken("AGENTMAIL_API_KEY"),
+    },
+  );
   const previousProviderCredentialHashes =
     registry.getSandbox(sandboxName)?.providerCredentialHashes ?? {};
   const hasMessagingTokens = messagingTokenDefs.some(({ token }) => !!token);

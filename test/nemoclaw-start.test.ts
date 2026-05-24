@@ -584,6 +584,7 @@ describe("nemoclaw-start gateway token export (#1114)", () => {
     expect(result.stderr).toContain("http://127.0.0.1:18790/");
     expect(envFile).toContain("export OPENCLAW_GATEWAY_PORT='18790'");
     expect(envFile).toContain("export OPENCLAW_GATEWAY_URL='ws://127.0.0.1:18790'");
+    expect(envFile).toContain("export NEMOCLAW_START_RESTART_PATH=/usr/local/bin/nemoclaw-start");
     expect(envFile).toContain("export OPENCLAW_GATEWAY_TOKEN='token'");
   });
 
@@ -787,6 +788,9 @@ describe("nemoclaw-start configure guard behavior", () => {
       expect(runGuardedOpenclaw(setup, ["agent", "--agent", "main", "-m", "hello"]).status).toBe(0);
       expect(runGuardedOpenclaw(setup, ["config", "get", "foo"]).status).toBe(0);
       expect(runGuardedOpenclaw(setup, ["channels", "list"]).status).toBe(0);
+      const gatewayRestartWithArgs = runGuardedOpenclaw(setup, ["gateway", "restart", "--bad"]);
+      expect(gatewayRestartWithArgs.status).toBe(2);
+      expect(gatewayRestartWithArgs.stderr).toContain("does not accept extra arguments");
       expect(fs.readFileSync(setup.commandLog, "utf-8")).toContain("agent --agent main -m hello");
       expect(fs.readFileSync(setup.commandLog, "utf-8")).toContain("config get foo");
       expect(fs.readFileSync(setup.commandLog, "utf-8")).toContain("channels list");

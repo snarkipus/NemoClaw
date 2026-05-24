@@ -57,6 +57,45 @@ RUN set -eu; \
     ps --version; \
     command -v chattr >/dev/null
 
+ARG GH_VERSION=2.92.0
+ARG NEOVIM_VERSION=0.12.2
+ARG NEOVIM_X86_64_SHA256=31cf85945cb600d96cdf69f88bc68bec814acbff50863c5546adef3a1bcef260
+ARG NEOVIM_ARM64_SHA256=f697d4e4582b6e4b5c3c26e76e06ce26efa08ba1768e03fd2733fcc422bb0490
+ARG OBSIDIAN_HEADLESS_VERSION=0.0.8
+ARG QMD_VERSION=2.5.2
+ARG PM2_VERSION=7.0.1
+ARG AGENTMAIL_PYTHON_SDK_VERSION=0.5.0
+
+# Install operator/debug tooling at build time. The running sandbox is policy-
+# gated, lacks systemd, and should not rely on runtime package installs for
+# core maintenance tools.
+# hadolint ignore=DL3016,DL3059,DL4006
+RUN mkdir -p /etc/apt/keyrings \
+    && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+        -o /etc/apt/keyrings/githubcli-archive-keyring.gpg \
+    && chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg \
+    && printf '%s\n' 'deb [arch=amd64,arm64 signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main' \
+        > /etc/apt/sources.list.d/github-cli.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends \
+        "gh=${GH_VERSION}" \
+    && rm -rf /var/lib/apt/lists/* \
+    && arch="$(dpkg --print-architecture)" \
+    && case "$arch" in \
+        amd64) nvim_arch=x86_64; nvim_sha="${NEOVIM_X86_64_SHA256}" ;; \
+        arm64) nvim_arch=arm64; nvim_sha="${NEOVIM_ARM64_SHA256}" ;; \
+        *) echo "Unsupported Neovim architecture: $arch" >&2; exit 1 ;; \
+    esac \
+    && curl -fsSL "https://github.com/neovim/neovim/releases/download/v${NEOVIM_VERSION}/nvim-linux-${nvim_arch}.tar.gz" \
+        -o /tmp/nvim-linux.tar.gz \
+    && printf '%s  %s\n' "$nvim_sha" /tmp/nvim-linux.tar.gz | sha256sum -c - \
+    && mkdir -p /usr/local/lib/nvim \
+    && tar -xzf /tmp/nvim-linux.tar.gz -C /usr/local/lib/nvim --strip-components=1 \
+    && ln -sf /usr/local/lib/nvim/bin/nvim /usr/local/bin/nvim \
+    && rm -f /tmp/nvim-linux.tar.gz \
+    && gh --version \
+    && nvim --version
+
 
 # Copy built plugin and blueprint into the sandbox
 COPY --from=builder /opt/nemoclaw/dist/ /opt/nemoclaw/dist/
@@ -75,6 +114,19 @@ ENV NPM_CONFIG_AUDIT=false \
     NPM_CONFIG_FETCH_RETRY_MAXTIMEOUT=120000 \
     NPM_CONFIG_FETCH_TIMEOUT=300000
 RUN npm ci --omit=dev
+RUN npm install -g --no-audit --no-fund --no-progress \
+        "obsidian-headless@${OBSIDIAN_HEADLESS_VERSION}" \
+        "@tobilu/qmd@${QMD_VERSION}" \
+        "pm2@${PM2_VERSION}" \
+    && command -v ob >/dev/null \
+    && command -v qmd >/dev/null \
+    && command -v pm2 >/dev/null
+
+# AgentMail baseline uses pinned host-side skill provisioning. Pre-install the
+# Python SDK so the fresh sandbox does not depend on runtime pip network access.
+RUN pip3 install --no-cache-dir --break-system-packages \
+        "agentmail==${AGENTMAIL_PYTHON_SDK_VERSION}" \
+    && python3 -c 'from agentmail import AgentMail; print(AgentMail.__name__)'
 COPY scripts/patch-openclaw-tool-catalog.js /usr/local/lib/nemoclaw/patch-openclaw-tool-catalog.js
 RUN chmod 755 /usr/local/lib/nemoclaw/patch-openclaw-tool-catalog.js
 
@@ -88,7 +140,7 @@ RUN chmod 755 /usr/local/lib/nemoclaw/patch-openclaw-tool-catalog.js
 #
 # The minimum required version comes from nemoclaw-blueprint/blueprint.yaml
 # (already COPYed to /opt/nemoclaw-blueprint/ above).
-# hadolint ignore=DL3059,DL4006
+# hadolint ignore=DL3016,DL3059,DL4006
 RUN set -eu; \
     MIN_VER=$(grep -m 1 'min_openclaw_version' /opt/nemoclaw-blueprint/blueprint.yaml | awk '{print $2}' | tr -d '"'); \
     [ -n "$MIN_VER" ] || { echo "ERROR: Could not parse min_openclaw_version from blueprint.yaml" >&2; exit 1; }; \
@@ -105,6 +157,52 @@ RUN set -eu; \
         rm -rf /usr/local/lib/node_modules/openclaw /usr/local/bin/openclaw; \
         npm install -g --no-audit --no-fund --no-progress "openclaw@${MIN_VER}"; \
     fi; \
+    # OpenClaw intentionally does not let the live gateway self-repair bundled \
+    # channel/plugin dependencies in this managed image. Install runtime deps \
+    # at build time so doctor/channel loading works without runtime npm. Do \
+    # not run bare `npm install --prefix "$plugin_dir"`: extension manifests \
+    # can include workspace:* dev deps, which npm rejects outside the upstream \
+    # monorepo even with --omit=dev. \
+    telegram_dir=/usr/local/lib/node_modules/openclaw/dist/extensions/telegram; \
+    test -e "$telegram_dir/package.json"; \
+    tmp_telegram_deps=/tmp/openclaw-telegram-runtime-deps; \
+    rm -rf "$tmp_telegram_deps"; \
+    mkdir -p "$tmp_telegram_deps"; \
+    npm install --prefix "$tmp_telegram_deps" --omit=dev --ignore-scripts --no-audit --no-fund --no-progress \
+        '@grammyjs/runner@2.0.3' \
+        '@grammyjs/transformer-throttler@1.2.1' \
+        'grammy@1.43.0' \
+        'typebox@1.1.38' \
+        'undici@8.3.0'; \
+    rm -rf "$telegram_dir/node_modules"; \
+    cp -a "$tmp_telegram_deps/node_modules" "$telegram_dir/node_modules"; \
+    rm -rf "$tmp_telegram_deps"; \
+    test -e "$telegram_dir/node_modules/grammy/package.json"; \
+    xai_dir=/usr/local/lib/node_modules/openclaw/dist/extensions/xai; \
+    memory_core_dir=/usr/local/lib/node_modules/openclaw/dist/extensions/memory-core; \
+    test -e "$xai_dir/package.json"; \
+    test -e "$memory_core_dir/package.json"; \
+    tmp_xai_deps=/tmp/openclaw-xai-runtime-deps; \
+    rm -rf "$tmp_xai_deps"; \
+    mkdir -p "$tmp_xai_deps"; \
+    npm install --prefix "$tmp_xai_deps" --omit=dev --ignore-scripts --no-audit --no-fund --no-progress \
+        '@earendil-works/pi-ai@0.75.4' \
+        'typebox@1.1.38'; \
+    rm -rf "$xai_dir/node_modules"; \
+    cp -a "$tmp_xai_deps/node_modules" "$xai_dir/node_modules"; \
+    rm -rf "$tmp_xai_deps"; \
+    test -e "$xai_dir/node_modules/@earendil-works/pi-ai/package.json"; \
+    tmp_memory_core_deps=/tmp/openclaw-memory-core-runtime-deps; \
+    rm -rf "$tmp_memory_core_deps"; \
+    mkdir -p "$tmp_memory_core_deps"; \
+    npm install --prefix "$tmp_memory_core_deps" --omit=dev --ignore-scripts --no-audit --no-fund --no-progress \
+        'chokidar@5.0.0' \
+        'json5@2.2.3' \
+        'typebox@1.1.38'; \
+    rm -rf "$memory_core_dir/node_modules"; \
+    cp -a "$tmp_memory_core_deps/node_modules" "$memory_core_dir/node_modules"; \
+    rm -rf "$tmp_memory_core_deps"; \
+    test -e "$memory_core_dir/node_modules/chokidar/package.json"; \
     # Pre-install the codex-acp package so the embedded ACPx runtime can
     # call the local binary instead of `npx @zed-industries/codex-acp`.
     # The sandbox's L7 proxy denies @zed-industries/* package URLs
@@ -223,6 +321,8 @@ RUN set -eu; \
         for f in $fg_assert; do \
             if grep -q 'process.env.OPENSHELL_SANDBOX === "1"' "$f"; then \
                 echo "INFO: Patch 2 already present in $f"; \
+            elif grep -q 'hostnameAllowlist: undefined' "$f" && grep -q 'allowPrivateProxy' "$f" && grep -q 'allowPrivateNetwork: true' "$f" && grep -q 'policy: proxyPolicy' "$f" && ! grep -Eq '^[[:space:]]*policy[[:space:]]*$' "$f"; then \
+                echo "INFO: OpenClaw ${OC_VERSION} already skips target hostname allowlists for explicit proxy validation in $f"; \
             else \
                 sed -i -E 's|(async function assertExplicitProxyAllowed\([^)]*\) \{)|\1 if (process.env.OPENSHELL_SANDBOX === "1") return; /* nemoclaw: env-gated bypass, see Dockerfile */ |' "$f"; \
                 grep -Eq 'assertExplicitProxyAllowed\([^)]*\) \{ if \(process\.env\.OPENSHELL_SANDBOX === "1"\) return; /\* nemoclaw' "$f" \
@@ -269,7 +369,24 @@ RUN set -eu; \
 	    else \
 	        grep -q 'await fs\.realpath(params\.installBaseDir) !== params\.expectedRealPath' "$ipd_file" || { echo "ERROR: install-package-dir lacks expected realpath stability guard" >&2; exit 1; }; \
 	    fi; \
-    # --- Patch 5: bump default WS handshake timeout 10s -> 60s (#2484) --- \
+    # --- Patch 4: cron local-provider preflight must use proxy DNS (#2484) --- \
+    # Isolated cron jobs preflight local providers before agent execution. \
+    # Without trusted_env_proxy mode, the probe resolves inference.local \
+    # directly inside the sandbox and skips jobs with getaddrinfo EAI_AGAIN. \
+    # OpenShell owns inference.local behind the sandbox proxy, so cron must use \
+    # the same proxy-aware fetch path as normal agent inference. \
+    mp_file="$(grep -RIlE --include='model-preflight.runtime-*.js' 'auditContext: "cron-model-provider-preflight"' "$OC_DIST" || true)"; \
+    test -n "$mp_file" || { echo "ERROR: cron model preflight runtime not found" >&2; exit 1; }; \
+    for f in $mp_file; do \
+        grep -q 'mode: "trusted_env_proxy"' "$f" || sed -i 's/auditContext: "cron-model-provider-preflight"/auditContext: "cron-model-provider-preflight",\n\t\tmode: "trusted_env_proxy"/' "$f"; \
+        grep -q 'mode: "trusted_env_proxy"' "$f" || { echo "ERROR: Patch 4 (cron trusted_env_proxy) not applied to $f" >&2; exit 1; }; \
+    done; \
+    # --- Patch 5: allow OpenShell-managed inference.local trusted endpoint --- \
+    ssrf_file="$(grep -RIlE --include='ssrf-*.js' 'function isBlockedHostnameNormalized\(normalized\)' "$OC_DIST" || true)"; \
+    test -n "$ssrf_file" || { echo "ERROR: SSRF hostname classifier not found" >&2; exit 1; }; \
+    printf '%s\n' "$ssrf_file" | xargs sed -i -E 's|(function isBlockedHostnameNormalized\(normalized\) \{)|\1 if (process.env.OPENSHELL_SANDBOX === "1" \&\& normalized === "inference.local") return false; /* nemoclaw: OpenShell managed inference route, see Dockerfile */ |'; \
+    grep -REq --include='ssrf-*.js' 'normalized === "inference\.local"\) return false; /\* nemoclaw: OpenShell managed inference route' "$OC_DIST" || { echo "ERROR: Patch 5 (inference.local SSRF exception) not applied" >&2; exit 1; }; \
+    # --- Patch 6: bump default WS handshake timeout 10s/15s -> 60s (#2484) --- \
     # OpenClaw's WS connect handshake has a hard-coded 10s timeout on both \
     # client and server. Server-side connect-handler processing can exceed \
     # that limit under load (multiple concurrent connects on slow CI infra), \
@@ -287,10 +404,10 @@ RUN set -eu; \
     hto_files="$(grep -RIlE --include='*.js' 'DEFAULT_PREAUTH_HANDSHAKE_TIMEOUT_MS = (1e4|15e3|6e4)' "$OC_DIST" || true)"; \
     test -n "$hto_files" || { echo "ERROR: handshake-timeout constant not found" >&2; exit 1; }; \
     printf '%s\n' "$hto_files" | xargs sed -i -E 's#DEFAULT_PREAUTH_HANDSHAKE_TIMEOUT_MS = (1e4|15e3)#DEFAULT_PREAUTH_HANDSHAKE_TIMEOUT_MS = 6e4#g'; \
-    if grep -REq --include='*.js' 'DEFAULT_PREAUTH_HANDSHAKE_TIMEOUT_MS = (1e4|15e3)' "$OC_DIST"; then echo "ERROR: Patch 5 left a short handshake-timeout constant" >&2; exit 1; fi; \
-    if ! grep -REq --include='*.js' 'DEFAULT_PREAUTH_HANDSHAKE_TIMEOUT_MS = 6e4' "$OC_DIST"; then echo "ERROR: Patch 5 did not find patched 6e4 constant" >&2; exit 1; fi
+    if grep -REq --include='*.js' 'DEFAULT_PREAUTH_HANDSHAKE_TIMEOUT_MS = (1e4|15e3)' "$OC_DIST"; then echo "ERROR: Patch 6 left a short handshake-timeout constant" >&2; exit 1; fi; \
+    if ! grep -REq --include='*.js' 'DEFAULT_PREAUTH_HANDSHAKE_TIMEOUT_MS = 6e4' "$OC_DIST"; then echo "ERROR: Patch 6 did not find patched 6e4 constant" >&2; exit 1; fi
 
-# Patch OpenClaw's pinned 2026.5.18 compiled selection runtime to expose a
+# Patch OpenClaw's pinned 2026.5.20 compiled selection runtime to expose a
 # compact searchable tool catalog to the model while preserving the full
 # effective tool set behind tool_call. NEMOCLAW_TOOL_CATALOG=0 disables this
 # wrapper if an emergency rollback is needed. The script fails closed if the

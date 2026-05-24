@@ -131,9 +131,9 @@ selectFromList(items, options)
 
 describe("policies", () => {
   describe("listPresets", () => {
-    it("returns all 19 presets", () => {
+    it("returns all 24 presets", () => {
       const presets = policies.listPresets();
-      expect(presets.length).toBe(19);
+      expect(presets.length).toBe(24);
     });
 
     it("each preset has name and description", () => {
@@ -149,10 +149,12 @@ describe("policies", () => {
         .map((p: { name: string }) => p.name)
         .sort();
       const expected = [
+        "agentmail",
         "brave",
         "brew",
         "discord",
         "github",
+        "host-services",
         "huggingface",
         "jira",
         "local-inference",
@@ -162,12 +164,15 @@ describe("policies", () => {
         "nous-image",
         "nous-web",
         "npm",
+        "obsidian",
         "outlook",
         "pypi",
+        "qmd",
         "slack",
         "telegram",
         "wechat",
         "whatsapp",
+        "xai",
       ];
       expect(names).toEqual(expected);
     });
@@ -375,6 +380,43 @@ describe("policies", () => {
           expect(content).not.toContain("browser-use.com");
         }
       }
+    });
+
+    it("v12 integration service presets remain available where no managed replacement exists", () => {
+      for (const presetName of ["agentmail", "obsidian", "qmd", "xai"]) {
+        expect(policies.loadPreset(presetName), `missing preset ${presetName}`).not.toBeNull();
+      }
+    });
+
+    it("agentmail preset allows PATCH for mark-read support", () => {
+      const content = requirePresetContent(policies.loadPreset("agentmail"));
+      const parsed = YAML.parse(content);
+      const apiEndpoint = parsed.network_policies.agentmail.endpoints.find(
+        (endpoint: { host?: string }) => endpoint.host === "api.agentmail.to",
+      );
+      expect(apiEndpoint?.rules).toContainEqual({ allow: { method: "PATCH", path: "/**" } });
+    });
+
+    it("xai preset targets native xAI APIs, not managed inference", () => {
+      const content = requirePresetContent(policies.loadPreset("xai"));
+      const parsed = YAML.parse(content);
+      expect(parsed.network_policies.xai.endpoints).toEqual([
+        expect.objectContaining({ host: "api.x.ai", port: 443 }),
+      ]);
+      expect(content).not.toContain("inference.local");
+    });
+
+    it("base OpenClaw docs policy covers Node-based docs fetches approved in v12", () => {
+      const content = fs.readFileSync(
+        path.join(REPO_ROOT, "nemoclaw-blueprint", "policies", "openclaw-sandbox.yaml"),
+        "utf8",
+      );
+      const parsed = YAML.parse(content);
+      const binaries = parsed.network_policies.openclaw_docs.binaries.map(
+        (binary: { path?: string }) => binary.path,
+      );
+      expect(binaries).toContain("/usr/local/bin/openclaw");
+      expect(binaries).toContain("/usr/local/bin/node");
     });
   });
 
@@ -1159,6 +1201,22 @@ exit 1
       expect(content.includes("access: full")).toBe(true);
       expect(content.includes("tls: skip")).toBe(true);
       expect(content.includes("protocol: rest")).toBe(false);
+      expect(content).toContain("host: www.npmjs.com");
+    });
+
+    it("host-services preset captures approved v12 host-side service ports", () => {
+      const content = requirePresetContent(policies.loadPreset("host-services"));
+      const parsed = YAML.parse(content);
+      const endpoints = parsed.network_policies.host_services.endpoints;
+      for (const host of ["host.openshell.internal", "host.docker.internal"]) {
+        for (const port of [1200, 8888]) {
+          const endpoint = endpoints.find(
+            (item: { host?: string; port?: number }) => item.host === host && item.port === port,
+          );
+          expect(endpoint, `missing ${host}:${port}`).toBeDefined();
+          expect(endpoint?.allowed_ips).toEqual(["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"]);
+        }
+      }
     });
 
     it("outlook preset allows PATCH on graph.microsoft.com", () => {

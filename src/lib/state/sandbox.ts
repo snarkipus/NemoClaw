@@ -1186,7 +1186,7 @@ export function backupSandboxState(sandboxName: string, options: BackupOptions =
         const result = spawnSync("ssh", [...sshArgs(configFile, sandboxName), tarCmd], {
           stdio: ["ignore", "pipe", "pipe"],
           timeout: 120000,
-          maxBuffer: 256 * 1024 * 1024,
+          maxBuffer: 2 * 1024 * 1024 * 1024,
         });
         _log(
           `SSH+tar download: exit=${result.status}, stdout=${result.stdout ? result.stdout.length + " bytes" : "null"}, stderr=${(result.stderr?.toString() || "").substring(0, 200)}`,

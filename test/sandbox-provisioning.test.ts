@@ -28,6 +28,23 @@ const HERMES_POLICY = path.join(ROOT, "agents", "hermes", "policy-additions.yaml
 const HERMES_POLICY_PERMISSIVE = path.join(ROOT, "agents", "hermes", "policy-permissive.yaml");
 const HERMES_START = path.join(ROOT, "agents", "hermes", "start.sh");
 
+describe("sandbox provisioning: carried runtime tools", () => {
+  it("pre-installs operator and assistant runtime tools used by v12", () => {
+    const dockerfile = fs.readFileSync(DOCKERFILE, "utf-8");
+
+    expect(dockerfile).toContain("ARG GH_VERSION=2.92.0");
+    expect(dockerfile).toContain("ARG NEOVIM_VERSION=0.12.2");
+    expect(dockerfile).toContain("ARG QMD_VERSION=2.5.2");
+    expect(dockerfile).toContain('"obsidian-headless@${OBSIDIAN_HEADLESS_VERSION}"');
+    expect(dockerfile).toContain('"@tobilu/qmd@${QMD_VERSION}"');
+    expect(dockerfile).toContain('"pm2@${PM2_VERSION}"');
+    expect(dockerfile).toContain('"agentmail==${AGENTMAIL_PYTHON_SDK_VERSION}"');
+    expect(dockerfile).toContain("'@grammyjs/runner@2.0.3'");
+    expect(dockerfile).toContain("'@earendil-works/pi-ai@0.75.4'");
+    expect(dockerfile).toContain("'chokidar@5.0.0'");
+  });
+});
+
 function dockerRunCommandBetween(
   dockerfile: string,
   startMarker: string,

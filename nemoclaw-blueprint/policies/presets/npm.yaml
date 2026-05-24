@@ -21,6 +21,10 @@ network_policies:
         port: 443
         access: full
         tls: skip
+      - host: www.npmjs.com
+        port: 443
+        access: full
+        tls: skip
     binaries:
       - { path: /usr/local/bin/npm* }
       - { path: /usr/local/bin/npx* }

@@ -10,8 +10,8 @@ import { describe, expect, it } from "vitest";
 const DOCKERFILE = path.join(import.meta.dirname, "..", "Dockerfile");
 const DOCKERFILE_BASE = path.join(import.meta.dirname, "..", "Dockerfile.base");
 const BLUEPRINT = path.join(import.meta.dirname, "..", "nemoclaw-blueprint", "blueprint.yaml");
-const REVIEWED_OPENCLAW_PATCH_CLASSIFIER_VERSIONS = ["2026.4.24", "2026.5.18"] as const;
-const CURRENT_REVIEWED_OPENCLAW_PATCH_CLASSIFIER_VERSION = "2026.5.18";
+const REVIEWED_OPENCLAW_PATCH_CLASSIFIER_VERSIONS = ["2026.4.24", "2026.5.20"] as const;
+const CURRENT_REVIEWED_OPENCLAW_PATCH_CLASSIFIER_VERSION = "2026.5.20";
 
 function readRequiredMatch(file: string, pattern: RegExp, description: string): string {
   const match = fs.readFileSync(file, "utf-8").match(pattern);
@@ -64,6 +64,11 @@ function runOpenClawUpgradeBlock(currentVersion: string) {
   const openclawShim = path.join(tmp, "openclaw-bin");
   fs.writeFileSync(blueprint, 'min_openclaw_version: "2026.4.2"\n');
   fs.mkdirSync(openclawInstall, { recursive: true });
+  for (const extension of ["telegram", "xai", "memory-core"]) {
+    const extensionDir = path.join(openclawInstall, "dist", "extensions", extension);
+    fs.mkdirSync(extensionDir, { recursive: true });
+    fs.writeFileSync(path.join(extensionDir, "package.json"), "{}\n");
+  }
   fs.writeFileSync(openclawShim, "");
   const command = dockerRunCommandBetween(
     "# The minimum required version comes from nemoclaw-blueprint/blueprint.yaml",
@@ -77,7 +82,22 @@ function runOpenClawUpgradeBlock(currentVersion: string) {
     "set -euo pipefail",
     `call_log=${JSON.stringify(log)}`,
     `openclaw() { if [ "\${1:-}" = "--version" ]; then printf 'openclaw ${currentVersion}\\n'; else return 127; fi; }`,
-    'npm() { printf "npm %s\\n" "$*" >> "$call_log"; }',
+    [
+      'npm() {',
+      '  printf "npm %s\\n" "$*" >> "$call_log"',
+      `  case " $* " in *" openclaw@"*) for extension in telegram xai memory-core; do mkdir -p ${JSON.stringify(openclawInstall)}"/dist/extensions/$extension"; : > ${JSON.stringify(openclawInstall)}"/dist/extensions/$extension/package.json"; done ;; esac`,
+      '  local prefix=""',
+      '  while [ "$#" -gt 0 ]; do',
+      '    if [ "${1:-}" = "--prefix" ]; then prefix="${2:-}"; shift 2; else shift; fi',
+      '  done',
+      '  if [ -n "$prefix" ]; then',
+      '    mkdir -p "$prefix/node_modules/grammy" "$prefix/node_modules/@earendil-works/pi-ai" "$prefix/node_modules/chokidar"',
+      '    : > "$prefix/node_modules/grammy/package.json"',
+      '    : > "$prefix/node_modules/@earendil-works/pi-ai/package.json"',
+      '    : > "$prefix/node_modules/chokidar/package.json"',
+      '  fi',
+      '}',
+    ].join("\n"),
     'command() { if [ "${1:-}" = "-v" ] && [ "${2:-}" = "codex-acp" ]; then return 0; fi; builtin command "$@"; }',
     command,
   ].join("\n");
@@ -111,7 +131,7 @@ function createSedWrapper(tmp: string): string {
   return fakeBin;
 }
 
-function runFetchGuardPatchBlock(dist: string, tmp: string, version = "2026.5.18") {
+function runFetchGuardPatchBlock(dist: string, tmp: string, version = "2026.5.20") {
   const command = dockerRunCommandBetween(
     "# Patch OpenClaw media fetch for proxy-only sandbox",
     "# --- Patch 3: follow symlinks in plugin-install path checks (#2203)",
@@ -269,6 +289,14 @@ if (globalThis.proxyChecks.length !== 0) throw new Error('sandbox proxy validati
       path.join(dist, "server.impl-test.js"),
       "const DEFAULT_PREAUTH_HANDSHAKE_TIMEOUT_MS = 15e3;\n",
     );
+    fs.writeFileSync(
+      path.join(dist, "model-preflight.runtime-test.js"),
+      'const request = { auditContext: "cron-model-provider-preflight" };\n',
+    );
+    fs.writeFileSync(
+      path.join(dist, "ssrf-test.js"),
+      "function isBlockedHostnameNormalized(normalized) { return normalized.endsWith('.local'); }\n",
+    );
 
     const command = dockerRunCommandBetween(
       "# Patch OpenClaw media fetch for proxy-only sandbox",
@@ -331,12 +359,18 @@ if (globalThis.proxyChecks.length !== 0) throw new Error('sandbox proxy validati
       expect(fs.readFileSync(path.join(dist, "install-package-dir-test.js"), "utf-8")).toContain(
         "const baseLstat = await fs.stat(params.installBaseDir)",
       );
+      expect(fs.readFileSync(path.join(dist, "model-preflight.runtime-test.js"), "utf-8")).toContain(
+        'mode: "trusted_env_proxy"',
+      );
+      expect(fs.readFileSync(path.join(dist, "ssrf-test.js"), "utf-8")).toContain(
+        'normalized === "inference.local"',
+      );
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });
     }
   });
 
-  it("applies the proxy validator patch while the target function still exists", () => {
+  it("skips the proxy validator patch when OpenClaw already ignores target allowlists", () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-fetch-guard-proxy-skip-"));
     const dist = path.join(tmp, "dist");
     fs.mkdirSync(dist, { recursive: true });
@@ -351,8 +385,8 @@ if (globalThis.proxyChecks.length !== 0) throw new Error('sandbox proxy validati
         "};",
         "async function assertExplicitProxyAllowed(dispatcherPolicy, lookupFn, policy) {",
         "  const proxyPolicy = policy || dispatcherPolicy.allowPrivateProxy === true ? {",
-        "    hostnameAllowlist: void 0,",
-        "    ...dispatcherPolicy.allowPrivateProxy === true ? { allowPrivateNetwork: true } : {},",
+        "    hostnameAllowlist: undefined,",
+        "    allowPrivateNetwork: true,",
         "  } : void 0;",
         "  await resolvePinnedHostnameWithPolicy(parsedProxyUrl.hostname, {",
         "    policy: proxyPolicy",
@@ -365,15 +399,15 @@ if (globalThis.proxyChecks.length !== 0) throw new Error('sandbox proxy validati
     );
 
     try {
-      const patch = runFetchGuardPatchBlock(dist, tmp, "2026.5.18");
+      const patch = runFetchGuardPatchBlock(dist, tmp, "2026.5.20");
       expect(patch.status, `${patch.stdout}${patch.stderr}`).toBe(0);
       expect(patch.stdout).toContain("Patch 1 applied");
-      expect(patch.stdout).toContain("Patch 2 applied");
+      expect(patch.stdout).toContain("already skips target hostname allowlists");
       const patched = fs.readFileSync(modulePath, "utf-8");
       expect(patched).toContain(
         "export { withTrustedEnvProxyGuardedFetchMode as a, withTrustedEnvProxyGuardedFetchMode as b };",
       );
-      expect(patched).toContain("nemoclaw: env-gated bypass");
+      expect(patched).not.toContain("nemoclaw: env-gated bypass");
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });
     }
@@ -611,7 +645,7 @@ if (globalThis.proxyChecks.length !== 0) throw new Error('sandbox proxy validati
     );
 
     try {
-      const patch = runFetchGuardPatchBlock(dist, tmp, "2026.5.18");
+      const patch = runFetchGuardPatchBlock(dist, tmp, "2026.5.20");
       expect(patch.status, `${patch.stdout}${patch.stderr}`).toBe(0);
       expect(patch.stdout).toContain("Patch 2 applied");
       const patched = fs.readFileSync(modulePath, "utf-8");
@@ -645,7 +679,7 @@ if (globalThis.proxyChecks.length !== 0) throw new Error('sandbox proxy validati
     );
 
     try {
-      const patch = runFetchGuardPatchBlock(dist, tmp, "2026.5.18");
+      const patch = runFetchGuardPatchBlock(dist, tmp, "2026.5.20");
       expect(patch.status, `${patch.stdout}${patch.stderr}`).toBe(0);
       expect(patch.stdout).toContain("Patch 2 applied");
       const patched = fs.readFileSync(modulePath, "utf-8");
@@ -688,7 +722,7 @@ if (globalThis.proxyChecks.length !== 0) throw new Error('sandbox proxy validati
     );
 
     try {
-      const patch = runFetchGuardPatchBlock(dist, tmp, "2026.5.18");
+      const patch = runFetchGuardPatchBlock(dist, tmp, "2026.5.20");
       expect(patch.status, `${patch.stdout}${patch.stderr}`).toBe(0);
       expect(patch.stdout).toContain("Patch 2 applied");
       const patched = fs.readFileSync(modulePath, "utf-8");

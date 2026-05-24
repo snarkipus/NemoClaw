@@ -13,6 +13,7 @@ const GATEWAY_MOUNT_PATH = "/opt/nemoclaw/openshell-gateway";
 const COMPAT_GATEWAY_CONFIG_NAME = "openshell-gateway.toml";
 const DEFAULT_COMPAT_BIND_ADDRESS = "0.0.0.0";
 const LOOPBACK_BIND_ADDRESS = "127.0.0.1";
+const LOCAL_TLS_DIR_ENV = "OPENSHELL_LOCAL_TLS_DIR";
 
 export type DockerDriverGatewayLaunch = {
   command: string;
@@ -166,10 +167,34 @@ export function buildDockerDriverGatewayConfigToml(
     "[openshell.gateway]",
     'compute_drivers = ["docker"]',
     "",
+    "[openshell.gateway.auth]",
+    "allow_unauthenticated_users = true",
+    "",
     "[openshell.drivers.docker]",
     dockerConfig,
     "",
   ].join("\n");
+}
+
+export function ensureDockerDriverGatewayLocalCerts(
+  gatewayBin: string,
+  gatewayEnv: Record<string, string>,
+): void {
+  const tlsDir = gatewayEnv[LOCAL_TLS_DIR_ENV];
+  if (!tlsDir) return;
+  const jwtDir = path.join(tlsDir, "jwt");
+  const jwtFiles = ["signing.pem", "public.pem", "kid"].map((name) => path.join(jwtDir, name));
+  if (jwtFiles.every((file) => fs.existsSync(file))) return;
+
+  execFileSync(
+    gatewayBin,
+    ["generate-certs", "--output-dir", tlsDir, "--server-san", "127.0.0.1", "--server-san", "localhost"],
+    {
+      env: { ...process.env, ...gatewayEnv },
+      stdio: ["ignore", "pipe", "pipe"],
+      timeout: 30_000,
+    },
+  );
 }
 
 function writeDockerDriverGatewayConfig(
@@ -232,6 +257,14 @@ export function buildDockerDriverGatewayLaunch(
   const compat = shouldUseContainerizedGateway(options);
   if (!compat.useContainer) {
     const env = { ...baseEnv, ...gatewayEnv };
+    const sandboxBin = options.sandboxBin || gatewayEnv.OPENSHELL_DOCKER_SUPERVISOR_BIN;
+    if (sandboxBin) {
+      env.OPENSHELL_GATEWAY_CONFIG = writeDockerDriverGatewayConfig(
+        options.stateDir,
+        gatewayEnv,
+        sandboxBin,
+      );
+    }
     return {
       command: options.gatewayBin,
       args: [],
@@ -309,20 +342,17 @@ export function buildDockerDriverGatewayRuntimeIdentity(
   options: BuildGatewayLaunchOptions,
 ): DockerDriverGatewayRuntimeIdentity {
   const launch = buildDockerDriverGatewayLaunch(options);
-  const desiredEnv =
-    launch.mode === "container"
-      ? {
-          ...options.gatewayEnv,
-          ...Object.fromEntries(
-            Object.entries(launch.env).filter(
-              ([key, val]) => key in options.gatewayEnv && typeof val === "string",
-            ) as [string, string][],
-          ),
-          ...(typeof launch.env.OPENSHELL_GATEWAY_CONFIG === "string"
-            ? { OPENSHELL_GATEWAY_CONFIG: launch.env.OPENSHELL_GATEWAY_CONFIG }
-            : {}),
-        }
-      : options.gatewayEnv;
+  const desiredEnv = {
+    ...options.gatewayEnv,
+    ...Object.fromEntries(
+      Object.entries(launch.env).filter(
+        ([key, val]) => key in options.gatewayEnv && typeof val === "string",
+      ) as [string, string][],
+    ),
+    ...(typeof launch.env.OPENSHELL_GATEWAY_CONFIG === "string"
+      ? { OPENSHELL_GATEWAY_CONFIG: launch.env.OPENSHELL_GATEWAY_CONFIG }
+      : {}),
+  };
   return {
     launch,
     desiredEnv,
