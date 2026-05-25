@@ -469,6 +469,7 @@ describe("generate-openclaw-config.py: config generation", () => {
     );
     expect(config.channels.telegram.accounts.default.proxy).toBe("http://10.200.0.1:3128");
     expect(config.channels.discord.accounts.default.proxy).toBeUndefined();
+    expect(config.plugins?.entries?.discord?.enabled).toBe(true);
   });
 
   it("#3894: routes Discord gateway traffic through OpenClaw's managed proxy", () => {
@@ -552,6 +553,7 @@ describe("generate-openclaw-config.py: config generation", () => {
       token: "openshell:resolve:env:DISCORD_BOT_TOKEN",
       enabled: false,
     });
+    expect(config.plugins?.entries?.discord?.enabled).toBe(true);
   });
 
   it("emits Bolt-shape placeholders for Slack so the SDK's prefix regex passes", () => {

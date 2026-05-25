@@ -829,6 +829,8 @@ def build_config(env: dict | None = None) -> dict:
         }
 
     plugins = {"entries": plugin_entries}
+    if "discord" in _ch_cfg:
+        plugin_entries["discord"] = {"enabled": True}
     plugin_load_paths: list[str] = []
     for plugin in openclaw_plugins:
         plugin_entries[plugin["id"]] = {"enabled": True}
