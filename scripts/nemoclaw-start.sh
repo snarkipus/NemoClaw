@@ -129,6 +129,7 @@ _TOOL_REDIRECTS=(
   'HISTFILE=/tmp/.bash_history'
   # Git identity and credential helper config must survive reboot; /tmp does not.
   'GIT_CONFIG_GLOBAL=/sandbox/.gitconfig'
+  'GH_CONFIG_DIR=/sandbox/.config/gh'
   'GNUPGHOME=/tmp/.gnupg'
   'PYTHONUSERBASE=/tmp/.local'
   'PYTHON_HISTORY=/tmp/.python_history'
@@ -151,12 +152,12 @@ if [ "$(id -u)" -eq 0 ]; then
   install -d -o sandbox -g sandbox -m 755 \
     /tmp/.npm-cache /tmp/.cache /tmp/.config /tmp/.local/share \
     /tmp/.local/state /tmp/.runtime /tmp/.claude \
-    /tmp/npm-global
+    /tmp/npm-global /sandbox/.config /sandbox/.config/gh
   install -d -o sandbox -g sandbox -m 700 /tmp/.gnupg
 else
   mkdir -p /tmp/.npm-cache /tmp/.cache /tmp/.config /tmp/.local/share \
     /tmp/.local/state /tmp/.runtime /tmp/.claude \
-    /tmp/npm-global
+    /tmp/npm-global /sandbox/.config/gh
   install -d -m 700 /tmp/.gnupg
 fi
 
