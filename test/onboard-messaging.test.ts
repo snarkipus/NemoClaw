@@ -121,6 +121,10 @@ const { createSandbox, setupMessagingChannels } = require(${onboardPath});
   process.env.SLACK_BOT_TOKEN = "xoxb-test-slack-token-value";
   process.env.SLACK_APP_TOKEN = "xapp-test-slack-app-token-value";
   process.env.TELEGRAM_BOT_TOKEN = "123456:ABC-test-telegram-token";
+  process.env.GITHUB_TOKEN = "ghp-test-github-token-value";
+  process.env.XAI_API_KEY = "xai-test-token-value";
+  process.env.FIRECRAWL_API_KEY = "fc-test-token-value";
+  process.env.AGENTMAIL_API_KEY = "am-test-token-value";
   process.env.KUBECONFIG = "/tmp/host-kubeconfig";
   process.env.SSH_AUTH_SOCK = "/tmp/host-ssh-agent.sock";
   await setupMessagingChannels(null, null, "my-assistant");
@@ -180,7 +184,22 @@ const { createSandbox, setupMessagingChannels } = require(${onboardPath});
       assert.ok(telegramProvider, "expected my-assistant-telegram-bridge provider create command");
       assert.match(telegramProvider.command, /--credential TELEGRAM_BOT_TOKEN/);
 
-      // Verify sandbox create includes --provider flags for all three
+      const extraProviders = [
+        ["my-assistant-github", "GITHUB_TOKEN", "ghp-test-github-token-value"],
+        ["my-assistant-xai-search", "XAI_API_KEY", "xai-test-token-value"],
+        ["my-assistant-firecrawl", "FIRECRAWL_API_KEY", "fc-test-token-value"],
+        ["my-assistant-agentmail", "AGENTMAIL_API_KEY", "am-test-token-value"],
+      ];
+      for (const [providerName, envKey, token] of extraProviders) {
+        const providerCommand = providerCommands.find((e: CommandEntry) =>
+          e.command.includes(providerName),
+        );
+        assert.ok(providerCommand, `expected ${providerName} provider create command`);
+        assert.match(providerCommand.command, new RegExp(`--credential ${envKey}`));
+        assert.equal(providerCommand.env?.[envKey], token);
+      }
+
+      // Verify sandbox create includes --provider flags for all attached providers.
       const createCommand = payload.commands.find((e: CommandEntry) =>
         e.command.includes("sandbox create"),
       );
@@ -188,6 +207,10 @@ const { createSandbox, setupMessagingChannels } = require(${onboardPath});
       assert.match(createCommand.command, /--provider my-assistant-discord-bridge/);
       assert.match(createCommand.command, /--provider my-assistant-slack-bridge/);
       assert.match(createCommand.command, /--provider my-assistant-telegram-bridge/);
+      assert.match(createCommand.command, /--provider my-assistant-github/);
+      assert.match(createCommand.command, /--provider my-assistant-xai-search/);
+      assert.match(createCommand.command, /--provider my-assistant-firecrawl/);
+      assert.match(createCommand.command, /--provider my-assistant-agentmail/);
       assert.match(createCommand.command, /--policy [^ ]*nemoclaw-initial-policy[^ ]*\.yaml/);
       assert.equal(createCommand.policyReadError, undefined);
       const policyDoc = YAML.parse(createCommand.policyContent || "") || {};
@@ -212,6 +235,10 @@ const { createSandbox, setupMessagingChannels } = require(${onboardPath});
       assert.doesNotMatch(createCommand.command, /SLACK_BOT_TOKEN=/);
       assert.doesNotMatch(createCommand.command, /SLACK_APP_TOKEN=/);
       assert.doesNotMatch(createCommand.command, /NEMOCLAW_MESSAGING_PLAN_B64=/);
+      assert.doesNotMatch(createCommand.command, /ghp-test-github-token-value/);
+      assert.doesNotMatch(createCommand.command, /xai-test-token-value/);
+      assert.doesNotMatch(createCommand.command, /fc-test-token-value/);
+      assert.doesNotMatch(createCommand.command, /am-test-token-value/);
 
       assert.ok(payload.messagingPlanEnv, "expected serialized messaging plan in host process env");
       const messagingPlan = JSON.parse(
@@ -252,6 +279,9 @@ const { createSandbox, setupMessagingChannels } = require(${onboardPath});
         undefined,
         "NVIDIA_API_KEY must not be in sandbox env",
       );
+      for (const envKey of ["GITHUB_TOKEN", "XAI_API_KEY", "FIRECRAWL_API_KEY", "AGENTMAIL_API_KEY"]) {
+        assert.equal(createCommand.env[envKey], undefined, `${envKey} must not be in sandbox env`);
+      }
       assert.equal(
         createCommand.env.KUBECONFIG,
         undefined,
@@ -281,6 +311,14 @@ const { createSandbox, setupMessagingChannels } = require(${onboardPath});
         !envString.includes("123456:ABC-test-telegram-token"),
         "Telegram token value must not leak into sandbox env",
       );
+      for (const rawToken of [
+        "ghp-test-github-token-value",
+        "xai-test-token-value",
+        "fc-test-token-value",
+        "am-test-token-value",
+      ]) {
+        assert.ok(!envString.includes(rawToken), `${rawToken} must not leak into sandbox env`);
+      }
     },
   );
 

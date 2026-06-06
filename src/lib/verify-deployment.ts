@@ -293,6 +293,14 @@ export interface MessagingBridgeStatus {
   runtimeProbeDetail: string | null;
 }
 
+function messagingProviderName(sandboxName: string, channel: string): string {
+  if (channel === "discord") return `${sandboxName}-discord-bridge`;
+  if (channel === "telegram") return `${sandboxName}-telegram-bridge`;
+  if (channel === "slack") return `${sandboxName}-slack-bridge`;
+  if (channel === "wechat") return `${sandboxName}-wechat-bridge`;
+  return channel;
+}
+
 /**
  * Verify messaging bridge health for all configured channels. Combines the
  * provider-attachment check (does OpenShell know about the bridge?) with the
@@ -317,7 +325,7 @@ function verifyMessagingBridges(
   }
   const missingProviders: string[] = [];
   for (const channel of channels) {
-    if (!deps.providerExistsInGateway(channel)) {
+    if (!deps.providerExistsInGateway(messagingProviderName(sandboxName, channel))) {
       missingProviders.push(channel);
     }
   }

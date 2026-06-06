@@ -871,6 +871,10 @@ function upsertProvider(
 
 type MessagingTokenDef = { name: string; envKey: string; token: string | null; providerType?: string };
 
+function getOptionalProviderCredential(envKey: string): string | null {
+  return getCredential(envKey) || normalizeCredentialValue(process.env[envKey]) || null;
+}
+
 type EndpointValidationResult =
   | { ok: true; api: string | null; retry?: undefined }
   | { ok: false; retry: "credential" | "selection" | "retry" | "model"; api?: undefined };
@@ -2939,6 +2943,28 @@ async function createSandbox(
   if (braveWebSearchEnabled) {
     messagingTokenDefs.push({ name: `${sandboxName}-brave-search`, envKey: webSearch.BRAVE_API_KEY_ENV, token: braveApiKey, providerType: braveProviderProfile.BRAVE_PROVIDER_PROFILE_ID });
   }
+  messagingTokenDefs.push(
+    {
+      name: `${sandboxName}-github`,
+      envKey: "GITHUB_TOKEN",
+      token: getOptionalProviderCredential("GITHUB_TOKEN"),
+    },
+    {
+      name: `${sandboxName}-xai-search`,
+      envKey: "XAI_API_KEY",
+      token: getOptionalProviderCredential("XAI_API_KEY"),
+    },
+    {
+      name: `${sandboxName}-firecrawl`,
+      envKey: "FIRECRAWL_API_KEY",
+      token: getOptionalProviderCredential("FIRECRAWL_API_KEY"),
+    },
+    {
+      name: `${sandboxName}-agentmail`,
+      envKey: "AGENTMAIL_API_KEY",
+      token: getOptionalProviderCredential("AGENTMAIL_API_KEY"),
+    },
+  );
   const previousProviderCredentialHashes =
     registry.getSandbox(sandboxName)?.providerCredentialHashes ?? {};
   const hasMessagingTokens = messagingTokenDefs.some(({ token }) => !!token);

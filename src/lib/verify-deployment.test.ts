@@ -110,7 +110,7 @@ describe("verifyDeployment", () => {
   it("messaging failure is a warning, not a blocker", async () => {
     const deps = makeDeps({
       getMessagingChannels: () => ["slack", "discord"],
-      providerExistsInGateway: (name: string) => name !== "discord",
+      providerExistsInGateway: (name: string) => name !== "my-sandbox-discord-bridge",
     });
     const result = await verifyDeployment("my-sandbox", chain, deps, NO_RETRY);
     expect(result.healthy).toBe(true); // messaging is non-blocking
@@ -118,6 +118,34 @@ describe("verifyDeployment", () => {
     const msgDiag = result.diagnostics.find((d) => d.link === "messaging");
     expect(msgDiag?.status).toBe("warn");
     expect(msgDiag?.detail).toContain("discord");
+  });
+
+  it("checks NemoClaw bridge provider names for configured messaging channels", async () => {
+    const checkedProviders: string[] = [];
+    const deps = makeDeps({
+      getMessagingChannels: () => ["telegram", "discord"],
+      providerExistsInGateway: (name: string) => {
+        checkedProviders.push(name);
+        return name === "my-sandbox-telegram-bridge" || name === "my-sandbox-discord-bridge";
+      },
+      probeChannelRuntimeStatus: () => ({
+        ok: true,
+        visibleChannels: ["telegram", "discord"],
+        configuredChannels: ["telegram", "discord"],
+        configuredButNotRunning: [],
+        logProbeOk: true,
+        detail: "config + log corroborated",
+      }),
+    });
+
+    const result = await verifyDeployment("my-sandbox", chain, deps, NO_RETRY);
+
+    expect(checkedProviders).toEqual([
+      "my-sandbox-telegram-bridge",
+      "my-sandbox-discord-bridge",
+    ]);
+    expect(result.verification.messagingBridgesHealthy).toBe(true);
+    expect(result.diagnostics.some((diagnostic) => diagnostic.link === "messaging")).toBe(false);
   });
 
   it("warns when an expected channel is absent from the runtime config entirely (stale rebuild)", async () => {
