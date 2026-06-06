@@ -72,6 +72,44 @@ RUN set -eu; \
     command -v chattr >/dev/null; \
     command -v tmux >/dev/null
 
+ARG GH_VERSION=2.93.0
+ARG NEOVIM_VERSION=0.12.2
+ARG NEOVIM_X86_64_SHA256=31cf85945cb600d96cdf69f88bc68bec814acbff50863c5546adef3a1bcef260
+ARG NEOVIM_ARM64_SHA256=f697d4e4582b6e4b5c3c26e76e06ce26efa08ba1768e03fd2733fcc422bb0490
+ARG OBSIDIAN_HEADLESS_VERSION=0.0.10
+ARG QMD_VERSION=2.5.3
+ARG PM2_VERSION=7.0.1
+ARG AGENTMAIL_PYTHON_SDK_VERSION=0.5.2
+
+# Install operator/debug tooling at build time. The running sandbox is policy-
+# gated, lacks systemd, and should not rely on runtime package installs for
+# core maintenance tools.
+# hadolint ignore=DL3016,DL3059,DL4006
+RUN mkdir -p /etc/apt/keyrings \
+    && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+        -o /etc/apt/keyrings/githubcli-archive-keyring.gpg \
+    && chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg \
+    && printf '%s\n' 'deb [arch=amd64,arm64 signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main' \
+        > /etc/apt/sources.list.d/github-cli.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends \
+        "gh=${GH_VERSION}" \
+    && rm -rf /var/lib/apt/lists/* \
+    && arch="$(dpkg --print-architecture)" \
+    && case "$arch" in \
+        amd64) nvim_arch=x86_64; nvim_sha="${NEOVIM_X86_64_SHA256}" ;; \
+        arm64) nvim_arch=arm64; nvim_sha="${NEOVIM_ARM64_SHA256}" ;; \
+        *) echo "Unsupported Neovim architecture: $arch" >&2; exit 1 ;; \
+    esac \
+    && curl -fsSL "https://github.com/neovim/neovim/releases/download/v${NEOVIM_VERSION}/nvim-linux-${nvim_arch}.tar.gz" \
+        -o /tmp/nvim-linux.tar.gz \
+    && printf '%s  %s\n' "$nvim_sha" /tmp/nvim-linux.tar.gz | sha256sum -c - \
+    && mkdir -p /usr/local/lib/nvim \
+    && tar -xzf /tmp/nvim-linux.tar.gz -C /usr/local/lib/nvim --strip-components=1 \
+    && ln -sf /usr/local/lib/nvim/bin/nvim /usr/local/bin/nvim \
+    && rm -f /tmp/nvim-linux.tar.gz \
+    && gh --version \
+    && nvim --version
 
 # Copy built plugin and blueprint into the sandbox
 COPY --from=builder /opt/nemoclaw/dist/ /opt/nemoclaw/dist/
@@ -90,6 +128,19 @@ ENV NPM_CONFIG_AUDIT=false \
     NPM_CONFIG_FETCH_RETRY_MAXTIMEOUT=120000 \
     NPM_CONFIG_FETCH_TIMEOUT=300000
 RUN npm ci --omit=dev
+RUN npm install -g --no-audit --no-fund --no-progress \
+        "obsidian-headless@${OBSIDIAN_HEADLESS_VERSION}" \
+        "@tobilu/qmd@${QMD_VERSION}" \
+        "pm2@${PM2_VERSION}" \
+    && command -v ob >/dev/null \
+    && command -v qmd >/dev/null \
+    && command -v pm2 >/dev/null
+
+# AgentMail baseline uses pinned host-side skill provisioning. Pre-install the
+# Python SDK so the fresh sandbox does not depend on runtime pip network access.
+RUN pip3 install --no-cache-dir --break-system-packages \
+        "agentmail==${AGENTMAIL_PYTHON_SDK_VERSION}" \
+    && python3 -c 'from agentmail import AgentMail; print(AgentMail.__name__)'
 COPY scripts/patch-openclaw-tool-catalog.js /usr/local/lib/nemoclaw/patch-openclaw-tool-catalog.js
 COPY scripts/patch-openclaw-chat-send.js /usr/local/lib/nemoclaw/patch-openclaw-chat-send.js
 RUN chmod 755 /usr/local/lib/nemoclaw/patch-openclaw-tool-catalog.js \

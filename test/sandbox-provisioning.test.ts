@@ -28,6 +28,22 @@ const HERMES_POLICY = path.join(ROOT, "agents", "hermes", "policy-additions.yaml
 const HERMES_POLICY_PERMISSIVE = path.join(ROOT, "agents", "hermes", "policy-permissive.yaml");
 const HERMES_START = path.join(ROOT, "agents", "hermes", "start.sh");
 
+describe("operator/debug tooling pins", () => {
+  it("pins sandbox-maintenance tools to reviewed versions", () => {
+    const dockerfile = fs.readFileSync(DOCKERFILE, "utf8");
+
+    expect(dockerfile).toContain("ARG GH_VERSION=2.93.0");
+    expect(dockerfile).toContain("ARG NEOVIM_VERSION=0.12.2");
+    expect(dockerfile).toContain("ARG OBSIDIAN_HEADLESS_VERSION=0.0.10");
+    expect(dockerfile).toContain("ARG QMD_VERSION=2.5.3");
+    expect(dockerfile).toContain("ARG PM2_VERSION=7.0.1");
+    expect(dockerfile).toContain("ARG AGENTMAIL_PYTHON_SDK_VERSION=0.5.2");
+    expect(dockerfile).toContain('"obsidian-headless@${OBSIDIAN_HEADLESS_VERSION}"');
+    expect(dockerfile).toContain('"@tobilu/qmd@${QMD_VERSION}"');
+    expect(dockerfile).toContain('"agentmail==${AGENTMAIL_PYTHON_SDK_VERSION}"');
+  });
+});
+
 function dockerRunCommandBetween(
   dockerfile: string,
   startMarker: string,
