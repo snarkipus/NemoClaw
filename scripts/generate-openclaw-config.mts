@@ -40,6 +40,14 @@ import { spawnSync } from "node:child_process";
 type Env = Record<string, string | undefined>;
 type JsonObject = Record<string, any>;
 
+const TOOL_SEARCH_OBJECT_KEYS = new Set([
+  "enabled",
+  "mode",
+  "codeTimeoutMs",
+  "searchDefaultLimit",
+  "maxSearchLimit",
+]);
+
 const KNOWN_MODEL_SETUP_AGENTS = new Set(["openclaw", "hermes"]);
 const MODEL_SETUP_EFFECT_KEYS: Record<string, Set<string>> = {
   openclaw: new Set(["openclawCompat", "openclawPlugins", "openclawTools"]),
@@ -56,6 +64,10 @@ const SCRIPT_DIR = dirname(SCRIPT_PATH);
 
 function isObject(value: unknown): value is JsonObject {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function jsonEqual(left: unknown, right: unknown): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
 }
 
 function unique<T>(values: Iterable<T>): T[] {
@@ -363,8 +375,45 @@ function validateSelectedAgentEffects(
           `${manifestPath}: unknown effects.openclawTools keys: ${unknownToolKeys.join(", ")}`,
         );
       }
-      if ("toolSearch" in tools && typeof tools.toolSearch !== "boolean") {
-        throw new Error(`${manifestPath}: effects.openclawTools.toolSearch must be a boolean`);
+      if ("toolSearch" in tools) {
+        const toolSearch = tools.toolSearch;
+        if (typeof toolSearch !== "boolean" && !isObject(toolSearch)) {
+          throw new Error(
+            `${manifestPath}: effects.openclawTools.toolSearch must be a boolean or object`,
+          );
+        }
+        if (isObject(toolSearch)) {
+          const unknownToolSearchKeys = Object.keys(toolSearch)
+            .filter((key) => !TOOL_SEARCH_OBJECT_KEYS.has(key))
+            .sort();
+          if (unknownToolSearchKeys.length > 0) {
+            throw new Error(
+              `${manifestPath}: unknown effects.openclawTools.toolSearch keys: ${unknownToolSearchKeys.join(", ")}`,
+            );
+          }
+          if ("enabled" in toolSearch && typeof toolSearch.enabled !== "boolean") {
+            throw new Error(
+              `${manifestPath}: effects.openclawTools.toolSearch.enabled must be a boolean`,
+            );
+          }
+          if (
+            "mode" in toolSearch &&
+            toolSearch.mode !== "code" &&
+            toolSearch.mode !== "tools"
+          ) {
+            throw new Error(
+              `${manifestPath}: effects.openclawTools.toolSearch.mode must be 'code' or 'tools'`,
+            );
+          }
+          for (const key of ["codeTimeoutMs", "searchDefaultLimit", "maxSearchLimit"]) {
+            const value = toolSearch[key];
+            if (value !== undefined && (!Number.isInteger(value) || value <= 0)) {
+              throw new Error(
+                `${manifestPath}: effects.openclawTools.toolSearch.${key} must be a positive integer`,
+              );
+            }
+          }
+        }
       }
     }
 
@@ -726,7 +775,7 @@ function applyOpenClawSetupEffects(
   }
 
   for (const [key, value] of Object.entries(effects.openclawTools || {})) {
-    if (key in openclawTools && openclawTools[key] !== value) {
+    if (key in openclawTools && !jsonEqual(openclawTools[key], value)) {
       throw new Error(
         `model-specific setup '${setup.id}' conflicts with OpenClaw tools key '${key}'`,
       );
@@ -767,7 +816,7 @@ export function buildConfig(env: Env = process.env): JsonObject {
     chatUiUrl = `http://127.0.0.1:${gatewayPort}`;
   }
   const providerKey = env.NEMOCLAW_PROVIDER_KEY as string;
-  const primaryModelRef = env.NEMOCLAW_PRIMARY_MODEL_REF as string;
+  let primaryModelRef = env.NEMOCLAW_PRIMARY_MODEL_REF as string;
   const inferenceBaseUrl = env.NEMOCLAW_INFERENCE_BASE_URL as string;
   const inferenceApi = env.NEMOCLAW_INFERENCE_API as string;
   const contextWindow = coercePositiveInt(env, "NEMOCLAW_CONTEXT_WINDOW", 131072);
@@ -954,30 +1003,95 @@ export function buildConfig(env: Env = process.env): JsonObject {
   const disableDeviceAuth = env.NEMOCLAW_DISABLE_DEVICE_AUTH === "1" || isRemote;
   const allowInsecure = parsed.scheme === "http";
 
-  const providers = {
-    [providerKey]: {
+  const richOpenShellProfile =
+    providerKey === "xiaomi" ||
+    (providerKey === "openai" && ["gpt-5.5", "openai/gpt-5.5"].includes(model)) ||
+    (providerKey === "inference" &&
+      ["gpt-5.5", "openai/gpt-5.5", "grok-4.3"].includes(model) &&
+      inferenceBaseUrl.replace(/\/+$/, "") === "https://inference.local/v1" &&
+      inferenceApi === "openai-responses");
+  const gpt55OpenShellProfile =
+    richOpenShellProfile && ["gpt-5.5", "openai/gpt-5.5"].includes(model);
+
+  function providerConfig(params: {
+    modelName: string;
+    cost?: JsonObject;
+    apiKey?: string;
+    modelId?: string;
+    compat?: JsonObject;
+    api?: string;
+    inputs?: string[];
+    reasoningValue?: boolean;
+    contextWindowValue?: number;
+    maxTokensValue?: number;
+  }): JsonObject {
+    const modelCompat = params.compat ?? inferenceCompat;
+    return {
       baseUrl: inferenceBaseUrl,
-      apiKey: "unused",
-      api: inferenceApi,
+      apiKey: params.apiKey ?? "unused",
+      api: params.api ?? inferenceApi,
       models: [
         {
-          ...(Object.keys(inferenceCompat).length > 0 ? { compat: inferenceCompat } : {}),
-          id: model,
-          name: primaryModelRef,
-          reasoning,
-          input: inferenceInputs,
-          cost: {
+          ...(Object.keys(modelCompat).length > 0 ? { compat: modelCompat } : {}),
+          id: params.modelId ?? model,
+          name: params.modelName,
+          reasoning: params.reasoningValue ?? reasoning,
+          input: params.inputs ?? inferenceInputs,
+          cost: params.cost ?? {
             input: 0,
             output: 0,
             cacheRead: 0,
             cacheWrite: 0,
           },
-          contextWindow,
-          maxTokens,
+          contextWindow: params.contextWindowValue ?? contextWindow,
+          maxTokens: params.maxTokensValue ?? maxTokens,
         },
       ],
-    },
-  };
+    };
+  }
+
+  let providers: JsonObject;
+  if (richOpenShellProfile) {
+    primaryModelRef = gpt55OpenShellProfile ? "openai/gpt-5.5" : "grok-4.3";
+    providers = {
+      xai: providerConfig({
+        modelName: "Grok 4.3",
+        api: "openai-responses",
+        modelId: "grok-4.3",
+        compat: {},
+        inputs: ["text", "image"],
+        reasoningValue: true,
+        contextWindowValue: 1000000,
+        maxTokensValue: 64000,
+        cost: { input: 1.25, output: 2.5, cacheRead: 0.2, cacheWrite: 0 },
+      }),
+      xiaomi: providerConfig({
+        modelName: "Xiaomi MiMo V2.5 Pro",
+        api: "openai-completions",
+        modelId: "mimo-v2.5-pro",
+        compat: { supportsStore: false },
+        inputs: ["text"],
+        reasoningValue: false,
+        contextWindowValue: 131072,
+        maxTokensValue: 4096,
+        cost: { input: 1, output: 3, cacheRead: 0.2, cacheWrite: 0 },
+      }),
+    };
+    if (gpt55OpenShellProfile) {
+      providers.openai = providerConfig({
+        modelName: "GPT-5.5",
+        api: "openai-responses",
+        modelId: "openai/gpt-5.5",
+        compat: { supportsStore: false },
+        inputs: ["text", "image"],
+        reasoningValue: true,
+        contextWindowValue: 400000,
+        maxTokensValue: 16192,
+      });
+    }
+  } else {
+    providers = { [providerKey]: providerConfig({ modelName: primaryModelRef }) };
+  }
 
   const pluginEntries: JsonObject = {
     acpx: { enabled: false },
@@ -1011,6 +1125,60 @@ export function buildConfig(env: Env = process.env): JsonObject {
   const openclawOtel = buildOpenClawOtelConfig(env);
   if (openclawOtel) {
     pluginEntries["diagnostics-otel"] = { enabled: true };
+  }
+  const xaiPluginBaseUrl = env.NEMOCLAW_XAI_PLUGIN_BASE_URL || "https://api.x.ai/v1";
+  if (richOpenShellProfile) {
+    pluginEntries.xai = {
+      enabled: true,
+      config: {
+        webSearch: {
+          apiKey: "openshell:resolve:env:XAI_API_KEY",
+          baseUrl: xaiPluginBaseUrl,
+        },
+        xSearch: { baseUrl: xaiPluginBaseUrl, enabled: true },
+        codeExecution: { enabled: true },
+      },
+    };
+    pluginEntries.xiaomi = { enabled: true };
+    pluginEntries.firecrawl = {
+      enabled: true,
+      config: {
+        webFetch: {
+          apiKey: "openshell:resolve:env:FIRECRAWL_API_KEY",
+          baseUrl: "https://api.firecrawl.dev",
+          maxAgeMs: 172800000,
+          onlyMainContent: true,
+          timeoutSeconds: 60,
+        },
+      },
+    };
+    pluginEntries["memory-core"] = {
+      enabled: true,
+      config: {
+        dreaming: {
+          enabled: true,
+          frequency: "0 */12 * * *",
+          timezone: "America/New_York",
+        },
+      },
+    };
+    pluginEntries["memory-wiki"] = {
+      enabled: true,
+      config: {
+        bridge: {
+          enabled: true,
+          followMemoryEvents: true,
+          indexDailyNotes: true,
+          indexDreamReports: true,
+          indexMemoryRoot: true,
+          readMemoryArtifacts: true,
+        },
+        context: { includeCompiledDigestPrompt: false },
+        search: { backend: "shared", corpus: "all" },
+        vault: { renderMode: "obsidian" },
+        vaultMode: "bridge",
+      },
+    };
   }
 
   const plugins: JsonObject = { entries: pluginEntries };
@@ -1065,6 +1233,18 @@ export function buildConfig(env: Env = process.env): JsonObject {
       enabled: true,
       otel: openclawOtel,
     };
+  }
+  if (richOpenShellProfile) {
+    config.agents.defaults.heartbeat ??= {
+      every: "30m",
+      lightContext: true,
+      isolatedSession: true,
+      activeHours: { start: "08:00", end: "23:00" },
+      target: "last",
+    };
+    config.agents.defaults.userTimezone = "America/New_York";
+    config.env = { GITHUB_TOKEN: "openshell:resolve:env:GITHUB_TOKEN" };
+    config.memory = { backend: "qmd", qmd: { searchMode: "vsearch" } };
   }
 
   const tools = config.tools;

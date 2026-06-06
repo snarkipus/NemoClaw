@@ -1360,6 +1360,112 @@ describe("generate-openclaw-config.mts: config generation", () => {
     expect(config.tools?.toolSearch).toBe(false);
   });
 
+  it("matches the managed GPT-5.5 OpenShell profile without obsolete local-patch params", () => {
+    const config = runConfigScript({
+      NEMOCLAW_MODEL: "gpt-5.5",
+      NEMOCLAW_PROVIDER_KEY: "inference",
+      NEMOCLAW_PRIMARY_MODEL_REF: "inference/gpt-5.5",
+      NEMOCLAW_INFERENCE_BASE_URL: "https://inference.local/v1",
+      NEMOCLAW_INFERENCE_API: "openai-responses",
+    });
+
+    expect(Object.keys(config.models.providers).sort()).toEqual(["openai", "xai", "xiaomi"]);
+    expect(config.agents.defaults.model.primary).toBe("openai/gpt-5.5");
+    expect(config.agents.defaults.heartbeat).toEqual({
+      every: "30m",
+      lightContext: true,
+      isolatedSession: true,
+      activeHours: { start: "08:00", end: "23:00" },
+      target: "last",
+    });
+    expect(config.agents.defaults.userTimezone).toBe("America/New_York");
+    expect(config.agents.defaults.models).toBeUndefined();
+    expect(config.models.providers.openai).toMatchObject({
+      baseUrl: "https://inference.local/v1",
+      apiKey: "unused",
+      api: "openai-responses",
+    });
+    expect(config.models.providers.openai.models[0]).toMatchObject({
+      id: "openai/gpt-5.5",
+      name: "GPT-5.5",
+      reasoning: true,
+      input: ["text", "image"],
+      contextWindow: 400000,
+      maxTokens: 16192,
+      compat: { supportsStore: false },
+    });
+    expect(config.models.providers.xai.models[0]).toMatchObject({
+      id: "grok-4.3",
+      name: "Grok 4.3",
+      reasoning: true,
+      input: ["text", "image"],
+      contextWindow: 1000000,
+      maxTokens: 64000,
+    });
+    expect(config.models.providers.xai.api).toBe("openai-responses");
+    expect(config.models.providers.xiaomi.api).toBe("openai-completions");
+    expect(config.plugins.entries.xai).toEqual({
+      enabled: true,
+      config: {
+        webSearch: {
+          apiKey: "openshell:resolve:env:XAI_API_KEY",
+          baseUrl: "https://api.x.ai/v1",
+        },
+        xSearch: { baseUrl: "https://api.x.ai/v1", enabled: true },
+        codeExecution: { enabled: true },
+      },
+    });
+    expect(config.plugins.entries.xiaomi).toEqual({ enabled: true });
+    expect(config.plugins.entries.firecrawl.config.webFetch).toMatchObject({
+      apiKey: "openshell:resolve:env:FIRECRAWL_API_KEY",
+      baseUrl: "https://api.firecrawl.dev",
+      maxAgeMs: 172800000,
+      onlyMainContent: true,
+      timeoutSeconds: 60,
+    });
+    expect(config.plugins.entries["memory-core"].config.dreaming).toEqual({
+      enabled: true,
+      frequency: "0 */12 * * *",
+      timezone: "America/New_York",
+    });
+    expect(config.plugins.entries["memory-wiki"].config).toMatchObject({
+      bridge: {
+        enabled: true,
+        followMemoryEvents: true,
+        indexDailyNotes: true,
+        indexDreamReports: true,
+        indexMemoryRoot: true,
+        readMemoryArtifacts: true,
+      },
+      context: { includeCompiledDigestPrompt: false },
+      search: { backend: "shared", corpus: "all" },
+      vault: { renderMode: "obsidian" },
+      vaultMode: "bridge",
+    });
+    expect(config.env).toEqual({ GITHUB_TOKEN: "openshell:resolve:env:GITHUB_TOKEN" });
+    expect(config.memory).toEqual({ backend: "qmd", qmd: { searchMode: "vsearch" } });
+    expect(config.tools?.toolSearch).toEqual({
+      enabled: true,
+      mode: "code",
+      codeTimeoutMs: 30000,
+    });
+  });
+
+  it("does not activate the managed GPT-5.5 profile on chat completions", () => {
+    const config = runConfigScript({
+      NEMOCLAW_MODEL: "gpt-5.5",
+      NEMOCLAW_PROVIDER_KEY: "inference",
+      NEMOCLAW_PRIMARY_MODEL_REF: "inference/gpt-5.5",
+      NEMOCLAW_INFERENCE_BASE_URL: "https://inference.local/v1",
+      NEMOCLAW_INFERENCE_API: "openai-completions",
+    });
+
+    expect(Object.keys(config.models.providers)).toEqual(["inference"]);
+    expect(config.agents.defaults.model.primary).toBe("inference/gpt-5.5");
+    expect(config.plugins.entries["memory-core"]).toBeUndefined();
+    expect(config.memory).toBeUndefined();
+  });
+
   it("adds registry compat when the incoming compat blob is null", () => {
     const config = runConfigScript({
       NEMOCLAW_MODEL: "moonshotai/kimi-k2.6",
@@ -1776,10 +1882,70 @@ describe("generate-openclaw-config.mts: config generation", () => {
 
     expectBuildConfigError(
       { NEMOCLAW_MODEL_SPECIFIC_SETUP_DIR: badToolRegistryDir },
-      "effects.openclawTools.toolSearch must be a boolean",
+      "effects.openclawTools.toolSearch must be a boolean or object",
     );
 
     fs.rmSync(path.join(blueprintDir, "model-specific-setup", "openclaw", "bad-tool-effect.json"));
+    const badToolObjectRegistryDir = writeRegistryManifest(
+      blueprintDir,
+      "openclaw/bad-tool-object-effect.json",
+      {
+        id: "bad-tool-object-effect",
+        agent: "openclaw",
+        description: "Invalid tool object override",
+        match: { modelIds: ["test-model"] },
+        effects: { openclawTools: { toolSearch: { enabled: true, timeout: 30000 } } },
+      },
+    );
+
+    expectBuildConfigError(
+      { NEMOCLAW_MODEL_SPECIFIC_SETUP_DIR: badToolObjectRegistryDir },
+      "unknown effects.openclawTools.toolSearch keys: timeout",
+    );
+
+    fs.rmSync(
+      path.join(blueprintDir, "model-specific-setup", "openclaw", "bad-tool-object-effect.json"),
+    );
+    const badToolModeRegistryDir = writeRegistryManifest(
+      blueprintDir,
+      "openclaw/bad-tool-mode-effect.json",
+      {
+        id: "bad-tool-mode-effect",
+        agent: "openclaw",
+        description: "Invalid tool mode override",
+        match: { modelIds: ["test-model"] },
+        effects: { openclawTools: { toolSearch: { mode: "native" } } },
+      },
+    );
+
+    expectBuildConfigError(
+      { NEMOCLAW_MODEL_SPECIFIC_SETUP_DIR: badToolModeRegistryDir },
+      "effects.openclawTools.toolSearch.mode must be 'code' or 'tools'",
+    );
+
+    fs.rmSync(
+      path.join(blueprintDir, "model-specific-setup", "openclaw", "bad-tool-mode-effect.json"),
+    );
+    const badToolTimeoutRegistryDir = writeRegistryManifest(
+      blueprintDir,
+      "openclaw/bad-tool-timeout-effect.json",
+      {
+        id: "bad-tool-timeout-effect",
+        agent: "openclaw",
+        description: "Invalid tool timeout override",
+        match: { modelIds: ["test-model"] },
+        effects: { openclawTools: { toolSearch: { codeTimeoutMs: 0 } } },
+      },
+    );
+
+    expectBuildConfigError(
+      { NEMOCLAW_MODEL_SPECIFIC_SETUP_DIR: badToolTimeoutRegistryDir },
+      "effects.openclawTools.toolSearch.codeTimeoutMs must be a positive integer",
+    );
+
+    fs.rmSync(
+      path.join(blueprintDir, "model-specific-setup", "openclaw", "bad-tool-timeout-effect.json"),
+    );
     fs.mkdirSync(path.join(blueprintDir, "openclaw-plugins", "fixture"), { recursive: true });
     const badLoadPathRegistryDir = writeRegistryManifest(
       blueprintDir,

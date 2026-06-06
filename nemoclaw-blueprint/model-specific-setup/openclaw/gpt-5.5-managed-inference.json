@@ -1,0 +1,21 @@
+{
+  "$schema": "../schema.json",
+  "id": "gpt-5.5-managed-inference",
+  "agent": "openclaw",
+  "description": "Uses OpenClaw's code-based Tool Search surface with a bounded execution timeout for GPT-5.5 through NemoClaw managed inference.local chat completions.",
+  "match": {
+    "modelIds": ["gpt-5.5", "openai/gpt-5.5"],
+    "providerKey": "inference",
+    "inferenceApi": "openai-responses",
+    "baseUrl": "https://inference.local/v1"
+  },
+  "effects": {
+    "openclawTools": {
+      "toolSearch": {
+        "enabled": true,
+        "mode": "code",
+        "codeTimeoutMs": 30000
+      }
+    }
+  }
+}

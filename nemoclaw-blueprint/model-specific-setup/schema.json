@@ -71,7 +71,36 @@
           "additionalProperties": false,
           "properties": {
             "toolSearch": {
-              "type": "boolean"
+              "oneOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "enabled": {
+                      "type": "boolean"
+                    },
+                    "mode": {
+                      "type": "string",
+                      "enum": ["code", "tools"]
+                    },
+                    "codeTimeoutMs": {
+                      "type": "integer",
+                      "minimum": 1
+                    },
+                    "searchDefaultLimit": {
+                      "type": "integer",
+                      "minimum": 1
+                    },
+                    "maxSearchLimit": {
+                      "type": "integer",
+                      "minimum": 1
+                    }
+                  }
+                }
+              ]
             }
           }
         },
