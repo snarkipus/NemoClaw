@@ -191,8 +191,22 @@ function writeFollowupRunnerWithoutOptsBindingFixture(dist: string): string {
   return fixture;
 }
 
-function writeGetReplyFixture(dist: string): string {
+function writeGetReplyFixture(
+  dist: string,
+  options: { embeddedRuntimeName?: "pi" | "embedded-agent" } = {},
+): string {
   const fixture = path.join(dist, "get-reply.fixture.js");
+  const embeddedRuntimeName = options.embeddedRuntimeName ?? "pi";
+  const runtimeLines =
+    embeddedRuntimeName === "embedded-agent"
+      ? [
+          "  const embeddedAgentRuntime = useFastReplyRuntime",
+          "    ? null",
+          '    : await traceRunPhase("reply.load_embedded_agent_runtime", () => loadEmbeddedAgentRuntime());',
+        ]
+      : [
+          '  const piRuntime = useFastReplyRuntime ? null : await traceRunPhase("reply.load_pi_runtime", () => loadPiEmbeddedRuntime());',
+        ];
   fs.writeFileSync(
     fixture,
     [
@@ -210,7 +224,7 @@ function writeGetReplyFixture(dist: string): string {
       "    inlineMode: perMessageQueueMode,",
       "    inlineOptions: perMessageQueueOptions",
       "  });",
-      '  const piRuntime = useFastReplyRuntime ? null : await traceRunPhase("reply.load_pi_runtime", () => loadPiEmbeddedRuntime());',
+      ...runtimeLines,
       "  const followupRun = {",
       "    prompt: queuedBody,",
       "    transcriptPrompt: transcriptCommandBody,",
@@ -219,7 +233,7 @@ function writeGetReplyFixture(dist: string): string {
       "    abortSignal: opts?.abortSignal,",
       "    run: { sessionId: preparedSessionState.sessionId }",
       "  };",
-      "  return { resolvedQueue, piRuntime, followupRun };",
+      "  return { resolvedQueue, followupRun };",
       "}",
       "",
     ].join("\n"),
@@ -338,6 +352,29 @@ describe("OpenClaw chat.send compatibility patch", () => {
       expect(patched).toContain("if (message) broadcastChatFinal({");
       expect(patched).toContain("          agentId,");
       expect(patched).toContain("suppressing empty final event");
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("recognizes the OpenClaw 2026.6.1 get-reply embedded runtime shape", () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-openclaw-get-reply-embedded-"));
+    const dist = path.join(tmp, "dist");
+    fs.mkdirSync(dist);
+    writeChatSendFixture(dist, { withAgentId: true });
+    writeFollowupRunnerFixture(dist);
+    const getReplyFixture = writeGetReplyFixture(dist, { embeddedRuntimeName: "embedded-agent" });
+
+    try {
+      const patch = runPatch(dist);
+      expect(patch.status, `${patch.stdout}${patch.stderr}`).toBe(0);
+
+      const patched = fs.readFileSync(getReplyFixture, "utf-8");
+      expect(patched).toContain(
+        'if (opts?.runId && sessionCtx.Provider === "webchat" && resolvedQueue.mode === "steer") resolvedQueue = {',
+      );
+      expect(patched).toContain("const embeddedAgentRuntime = useFastReplyRuntime");
+      expect(patched).toContain("reply.load_embedded_agent_runtime");
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });
     }

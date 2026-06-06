@@ -171,7 +171,7 @@ function patchGetReplyFile(file) {
       fail(`OpenClaw get-reply queue settings shape not recognized in ${file}`);
     }
 
-    const next = source.replace(
+    let next = source.replace(
       /\n(\s*)const piRuntime = useFastReplyRuntime \? null : await traceRunPhase\("reply\.load_pi_runtime", \(\) => loadPiEmbeddedRuntime\(\)\);/,
       (_match, indent) =>
         `\n${indent}if (opts?.runId && sessionCtx.Provider === "webchat" && resolvedQueue.mode === "steer") resolvedQueue = {\n` +
@@ -182,7 +182,21 @@ function patchGetReplyFile(file) {
         `${indent}const piRuntime = useFastReplyRuntime ? null : await traceRunPhase("reply.load_pi_runtime", () => loadPiEmbeddedRuntime());`,
     );
     if (next === source) {
-      fail(`OpenClaw get-reply pi runtime shape not recognized in ${file}`);
+      next = source.replace(
+        /\n(\s*)const embeddedAgentRuntime = useFastReplyRuntime\n\s*\? null\n\s*: await traceRunPhase\("reply\.load_embedded_agent_runtime", \(\) => loadEmbeddedAgentRuntime\(\)\);/,
+        (_match, indent) =>
+          `\n${indent}if (opts?.runId && sessionCtx.Provider === "webchat" && resolvedQueue.mode === "steer") resolvedQueue = {\n` +
+          `${indent}\t...resolvedQueue,\n` +
+          `${indent}\tmode: "followup",\n` +
+          `${indent}\tdebounceMs: 0\n` +
+          `${indent}}; // nemoclaw: force webchat chat.send queued turns to keep per-message replies (#2603, #3145)\n` +
+          `${indent}const embeddedAgentRuntime = useFastReplyRuntime\n` +
+          `${indent}\t? null\n` +
+          `${indent}\t: await traceRunPhase("reply.load_embedded_agent_runtime", () => loadEmbeddedAgentRuntime());`,
+      );
+    }
+    if (next === source) {
+      fail(`OpenClaw get-reply embedded runtime shape not recognized in ${file}`);
     }
     source = next;
   }
