@@ -56,6 +56,12 @@ describe("onboard policy preset suggestions", () => {
     "local-inference",
     "weather",
     "public-reference",
+    "agentmail",
+    "github",
+    "host-services",
+    "obsidian",
+    "qmd",
+    "xai",
     "nous-web",
     "nous-image",
     "nous-audio",
@@ -251,6 +257,47 @@ describe("onboard policy preset suggestions", () => {
       webSearchSupported: true,
     });
     expect(suggestions).toEqual(["npm", "pypi", "huggingface", "brew", "brave", "weather"]);
+  });
+
+  it("adds OpenClaw compatible-endpoint auxiliary presets without Hermes-only Nous presets", () => {
+    const suggestions = computeSetupPresetSuggestions("balanced", {
+      enabledChannels: ["discord", "telegram"],
+      knownPresetNames: [...known, "openclaw-pricing"],
+      provider: "compatible-endpoint",
+      agent: "openclaw",
+    });
+
+    expect(suggestions).toEqual(
+      expect.arrayContaining([
+        "discord",
+        "telegram",
+        "brave",
+        "agentmail",
+        "github",
+        "obsidian",
+        "qmd",
+        "xai",
+        "host-services",
+      ]),
+    );
+    expect(suggestions).not.toContain("nous-web");
+    expect(suggestions).not.toContain("nous-code");
+  });
+
+  it("does not add compatible-endpoint auxiliary presets for other OpenClaw providers", () => {
+    const suggestions = computeSetupPresetSuggestions("balanced", {
+      enabledChannels: ["discord", "telegram"],
+      knownPresetNames: [...known, "openclaw-pricing"],
+      provider: "nvidia-prod",
+      agent: "openclaw",
+    });
+
+    expect(suggestions).toContain("discord");
+    expect(suggestions).toContain("telegram");
+    expect(suggestions).not.toContain("agentmail");
+    expect(suggestions).not.toContain("github");
+    expect(suggestions).not.toContain("xai");
+    expect(suggestions).not.toContain("host-services");
   });
 
   it("filters tier defaults to known presets for agent-specific onboarding", () => {

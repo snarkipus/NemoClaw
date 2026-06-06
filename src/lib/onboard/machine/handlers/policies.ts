@@ -66,6 +66,7 @@ export interface PoliciesStateOptions<Agent, WebSearchConfig> {
         enabledChannels: string[];
         hermesToolGateways: string[];
         agent?: string | null;
+        provider?: string | null;
         webSearchConfig: WebSearchConfig | null;
         webSearchSupported: boolean;
       },
@@ -155,6 +156,7 @@ export async function handlePoliciesState<Agent, WebSearchConfig>({
     enabledChannels: policyMessagingChannels,
     hermesToolGateways,
     agent: normalizeAgentName((agent as { name?: string } | null)?.name),
+    provider,
     webSearchConfig,
     webSearchSupported,
   });

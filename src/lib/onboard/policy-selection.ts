@@ -45,6 +45,16 @@ type TiersApi = {
   getTier(tierName: string): unknown;
 };
 
+const OPENCLAW_COMPATIBLE_ENDPOINT_AUXILIARY_PRESETS = [
+  "brave",
+  "agentmail",
+  "github",
+  "obsidian",
+  "qmd",
+  "xai",
+  "host-services",
+];
+
 export type SetupPresetSuggestionOptions = {
   enabledChannels?: string[] | null;
   webSearchConfig?: WebSearchConfig | null;
@@ -106,6 +116,7 @@ export function mergeRequiredSetupPolicyPresets(
     enabledChannels?: string[] | null;
     hermesToolGateways?: string[] | null;
     agent?: string | null;
+    provider?: string | null;
     knownPresetNames?: string[] | Set<string> | null;
     env?: NodeJS.ProcessEnv;
   } = {},
@@ -114,10 +125,20 @@ export function mergeRequiredSetupPolicyPresets(
     policyPresets,
     options.agent,
   );
+  const compatibleEndpointAuxiliaryPresets =
+    isOpenclawAgent(options.agent) && options.provider === "compatible-endpoint"
+    ? OPENCLAW_COMPATIBLE_ENDPOINT_AUXILIARY_PRESETS.filter((preset) =>
+        Array.isArray(options.knownPresetNames)
+          ? options.knownPresetNames.includes(preset)
+          : options.knownPresetNames instanceof Set
+            ? options.knownPresetNames.has(preset)
+            : true,
+      )
+    : [];
   const mergedPresets = mergeRequiredOpenclawOtelPolicyPresets(
     mergeRequiredMessagingChannelPolicyPresets(
       mergeRequiredHermesToolGatewayPolicyPresets(
-        agentFilteredPresets,
+        [...agentFilteredPresets, ...compatibleEndpointAuxiliaryPresets],
         options.hermesToolGateways,
         options.knownPresetNames,
       ),
@@ -185,6 +206,9 @@ export function computeSetupPresetSuggestions(
   if (isOpenclawAgent(agent)) {
     add("openclaw-pricing");
     for (const preset of requiredOpenclawOtelPolicyPresets(agent, env)) add(preset);
+    if (provider === "compatible-endpoint") {
+      for (const preset of OPENCLAW_COMPATIBLE_ENDPOINT_AUXILIARY_PRESETS) add(preset);
+    }
   }
   if (tierName === "open" && typeof agent === "string" && agent.trim().toLowerCase() === "hermes") {
     for (const preset of allHermesToolGatewayPolicyPresets()) add(preset);
@@ -210,6 +234,7 @@ export function preparePolicyPresetResumeSelection(
     enabledChannels?: string[] | null;
     hermesToolGateways?: string[] | null;
     agent?: string | null;
+    provider?: string | null;
     webSearchConfig?: WebSearchConfig | null;
     webSearchSupported?: boolean | null;
     env?: NodeJS.ProcessEnv;
@@ -269,6 +294,7 @@ export function preparePolicyPresetResumeSelection(
       enabledChannels: options.enabledChannels,
       hermesToolGateways: options.hermesToolGateways,
       agent: options.agent,
+      provider: options.provider,
       knownPresetNames: selectablePolicyPresets.map((preset) => preset.name),
       env: options.env,
     });
@@ -362,6 +388,7 @@ async function setupPoliciesWithSelectionInner(
       enabledChannels,
       hermesToolGateways,
       agent,
+      provider,
       knownPresetNames: knownSelectablePresets,
       env: deps.env,
     });
@@ -433,6 +460,7 @@ async function setupPoliciesWithSelectionInner(
       enabledChannels,
       hermesToolGateways,
       agent,
+      provider,
       knownPresetNames: knownPresets,
       env: deps.env,
     });
