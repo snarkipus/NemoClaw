@@ -244,16 +244,20 @@ describe("docker-driver-gateway-launch", () => {
     expect(resolveDriftGatewayBin(null, null)).toBeNull();
   });
 
-  it("uses the host binary when the gateway ABI is compatible", () => {
-    withTempBinaries(({ dir, gatewayBin }) => {
+  it("uses the host binary with gateway TOML when the gateway ABI is compatible", () => {
+    withTempBinaries(({ dir, gatewayBin, sandboxBin }) => {
       const launch = buildDockerDriverGatewayLaunch({
         gatewayBin,
+        sandboxBin,
         stateDir: dir,
         platform: "linux",
         env: {},
         hostGlibcVersion: "2.39",
         requiredGlibcVersions: ["2.39"],
-        gatewayEnv: { OPENSHELL_DRIVERS: "docker" },
+        gatewayEnv: {
+          OPENSHELL_DRIVERS: "docker",
+          OPENSHELL_LOCAL_TLS_DIR: path.join(dir, "tls"),
+        },
       });
 
       expect(launch).toMatchObject({
@@ -262,6 +266,11 @@ describe("docker-driver-gateway-launch", () => {
         mode: "host",
         processGatewayBin: gatewayBin,
       });
+      expect(launch.env.OPENSHELL_GATEWAY_CONFIG).toBe(path.join(dir, "openshell-gateway.toml"));
+      const config = fs.readFileSync(path.join(dir, "openshell-gateway.toml"), "utf-8");
+      expect(config).toContain("[openshell.gateway.auth]");
+      expect(config).toContain("allow_unauthenticated_users = true");
+      expect(config).toContain("[openshell.gateway.gateway_jwt]");
     });
   });
 });

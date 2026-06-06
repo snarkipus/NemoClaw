@@ -287,6 +287,14 @@ export function buildDockerDriverGatewayLaunch(
   const baseEnv = options.env ?? process.env;
   const compat = shouldUseContainerizedGateway(options);
   if (!compat.useContainer) {
+    const sandboxBin = options.sandboxBin || gatewayEnv.OPENSHELL_DOCKER_SUPERVISOR_BIN;
+    if (sandboxBin) {
+      gatewayEnv.OPENSHELL_GATEWAY_CONFIG = writeDockerDriverGatewayConfig(
+        options.stateDir,
+        gatewayEnv,
+        sandboxBin,
+      );
+    }
     const env = { ...baseEnv, ...gatewayEnv };
     return {
       command: options.gatewayBin,
@@ -382,7 +390,12 @@ export function buildDockerDriverGatewayRuntimeIdentity(
             ? { OPENSHELL_GATEWAY_CONFIG: launch.env.OPENSHELL_GATEWAY_CONFIG }
             : {}),
         }
-      : options.gatewayEnv;
+      : {
+          ...options.gatewayEnv,
+          ...(typeof launch.env.OPENSHELL_GATEWAY_CONFIG === "string"
+            ? { OPENSHELL_GATEWAY_CONFIG: launch.env.OPENSHELL_GATEWAY_CONFIG }
+            : {}),
+        };
   return {
     launch,
     desiredEnv,
