@@ -334,10 +334,11 @@ describe("nemoclaw-start non-root fallback", () => {
 
   // #4503/#4710: the Docker HEALTHCHECK reports healthy on curl-exit-7 only
   // when the /tmp/nemoclaw-gateway-local marker is ABSENT (gateway delivered
-  // out of this container's namespace). To avoid masking a slow in-container
-  // startup, the entrypoint must drop that marker early on the gateway-serving
-  // path — and must NOT drop it when only running a one-shot command or when
-  // OpenShell's Docker driver serves the gateway from the host.
+  // out of Docker HEALTHCHECK's namespace). To avoid masking a slow
+  // in-container startup, the entrypoint must drop that marker early on the
+  // gateway-serving path — and must NOT drop it when only running a one-shot
+  // command or when OpenShell's Docker sandbox wrapper puts the gateway in a
+  // different network namespace.
   it("drops the in-container gateway healthcheck marker only on the local gateway path (#4503, #4710)", () => {
     const src = fs.readFileSync(START_SCRIPT, "utf-8");
     const start = src.indexOf('NEMOCLAW_CMD=("$@")');
@@ -347,9 +348,11 @@ describe("nemoclaw-start non-root fallback", () => {
     }
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-gw-marker-"));
     const markerPath = path.join(tmpDir, "nemoclaw-gateway-local");
+    const pid1CmdlinePath = path.join(tmpDir, "pid1-cmdline");
     const snippet = src
       .slice(start, end)
-      .replaceAll("/tmp/nemoclaw-gateway-local", markerPath);
+      .replaceAll("/tmp/nemoclaw-gateway-local", markerPath)
+      .replaceAll("/proc/1/cmdline", pid1CmdlinePath);
 
     function runScenario(setArgs: string, env: NodeJS.ProcessEnv = {}) {
       const script = ["#!/usr/bin/env bash", "set -euo pipefail", setArgs, snippet].join("\n");
@@ -363,6 +366,7 @@ describe("nemoclaw-start non-root fallback", () => {
     try {
       // Gateway-serving path: no trailing command, so the marker is dropped.
       fs.rmSync(markerPath, { force: true });
+      fs.writeFileSync(pid1CmdlinePath, "/usr/local/bin/nemoclaw-start\0");
       const serving = runScenario("set --");
       expect(serving.status).toBe(0);
       expect(fs.existsSync(markerPath)).toBe(true);
@@ -387,6 +391,16 @@ describe("nemoclaw-start non-root fallback", () => {
       fs.rmSync(markerPath, { force: true });
       const mixedDrivers = runScenario("set --", { OPENSHELL_DRIVERS: "vm,docker" });
       expect(mixedDrivers.status).toBe(0);
+      expect(fs.existsSync(markerPath)).toBe(false);
+
+      // OpenShell Docker sandbox path: the gateway process runs in the
+      // sandbox-side network namespace, while Docker HEALTHCHECK probes from
+      // PID 1's namespace. The marker must stay absent so the healthcheck does
+      // not strict-check 127.0.0.1 in the wrong namespace.
+      fs.rmSync(markerPath, { force: true });
+      fs.writeFileSync(pid1CmdlinePath, "/opt/openshell/bin/openshell-sandbox\0");
+      const openshellWrapper = runScenario("set --");
+      expect(openshellWrapper.status).toBe(0);
       expect(fs.existsSync(markerPath)).toBe(false);
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });

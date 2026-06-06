@@ -969,16 +969,16 @@ RUN set -eu; \
 #           --ignore-ancestors) AND the gateway log is non-empty. A
 #           standalone deployment whose gateway never started fails here so
 #           Docker restarts it (#1430).
-#        b. If the marker is ABSENT the OpenClaw gateway is delivered
-#           outside this container (OpenShell docker-driver deployments run
-#           it on the host / in a host-side process chain — #4503). An
-#           in-container curl/pgrep cannot observe an out-of-namespace
-#           gateway, so a process-name fallback here produced false
-#           "unhealthy" while `nemoclaw status` and OpenShell reported the
-#           sandbox Ready. We must not drive Docker health off a signal we
-#           cannot prove: report healthy and defer to NemoClaw/OpenShell's
-#           host-side delivery-chain monitoring (verify-deployment.ts, host
-#           port forward, sandbox status).
+#        b. If the marker is ABSENT the OpenClaw gateway is delivered outside
+#           Docker HEALTHCHECK's namespace. In OpenShell docker sandboxes the
+#           gateway runs in the sandbox-side namespace while Docker healthcheck
+#           probes from PID 1's namespace; older docker-driver deployments also
+#           delivered it via a host-side process chain (#4503). A fallback here
+#           produced false "unhealthy" while `nemoclaw status` and OpenShell
+#           reported the sandbox Ready. We must not drive Docker health off a
+#           signal we cannot prove: report healthy and defer to
+#           NemoClaw/OpenShell's delivery-chain monitoring (verify-deployment.ts,
+#           host port forward, sandbox status).
 #
 # The process pattern matches both `openclaw gateway run` (the launcher
 # command nemoclaw-start runs) and `openclaw-gateway` (the re-execed

@@ -212,15 +212,22 @@ mark_in_container_gateway() {
 }
 # A non-empty NEMOCLAW_CMD means this container only runs a one-shot command
 # (e.g. `openclaw agent ...`) and never serves the gateway, so leave the marker
-# absent. Docker-driver sandboxes also leave it absent because OpenShell runs
-# the gateway as a host-side process outside this container's namespace. Both
-# the root and non-root entrypoint paths gate local gateway startup on the same
-# emptiness check further below.
+# absent. OpenShell docker sandboxes also leave it absent because Docker
+# HEALTHCHECK runs in the PID 1 network namespace while OpenShell exec sessions
+# and the gateway run in the sandbox-side namespace. Both the root and non-root
+# entrypoint paths gate local gateway startup on the same emptiness check further
+# below.
 case ",${OPENSHELL_DRIVERS:-}," in
   *,docker,*) _NEMOCLAW_DOCKER_DRIVER=1 ;;
   *) _NEMOCLAW_DOCKER_DRIVER=0 ;;
 esac
-if [ ${#NEMOCLAW_CMD[@]} -eq 0 ] && [ "$_NEMOCLAW_DOCKER_DRIVER" != "1" ]; then
+_NEMOCLAW_PID1_CMDLINE_PATH="${NEMOCLAW_PID1_CMDLINE_PATH:-/proc/1/cmdline}"
+_NEMOCLAW_PID1_CMDLINE="$(tr '\0' ' ' <"$_NEMOCLAW_PID1_CMDLINE_PATH" 2>/dev/null || true)"
+case "$_NEMOCLAW_PID1_CMDLINE" in
+  */opt/openshell/bin/openshell-sandbox*) _NEMOCLAW_OPENSHELL_WRAPPER=1 ;;
+  *) _NEMOCLAW_OPENSHELL_WRAPPER=0 ;;
+esac
+if [ ${#NEMOCLAW_CMD[@]} -eq 0 ] && [ "$_NEMOCLAW_DOCKER_DRIVER" != "1" ] && [ "$_NEMOCLAW_OPENSHELL_WRAPPER" != "1" ]; then
   mark_in_container_gateway
 fi
 
