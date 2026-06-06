@@ -1366,7 +1366,13 @@ describe("generate-openclaw-config.mts: config generation", () => {
       NEMOCLAW_PROVIDER_KEY: "inference",
       NEMOCLAW_PRIMARY_MODEL_REF: "inference/gpt-5.5",
       NEMOCLAW_INFERENCE_BASE_URL: "https://inference.local/v1",
-      NEMOCLAW_INFERENCE_API: "openai-responses",
+      NEMOCLAW_INFERENCE_API: "openai-completions",
+      NEMOCLAW_MODEL_SPECIFIC_SETUP_DIR: path.join(
+        import.meta.dirname,
+        "..",
+        "nemoclaw-blueprint",
+        "model-specific-setup",
+      ),
     });
 
     expect(Object.keys(config.models.providers)).toEqual(["inference"]);
@@ -1383,7 +1389,7 @@ describe("generate-openclaw-config.mts: config generation", () => {
     expect(config.models.providers.inference).toMatchObject({
       baseUrl: "https://inference.local/v1",
       apiKey: "unused",
-      api: "openai-responses",
+      api: "openai-completions",
     });
     expect(config.models.providers.inference.models[0]).toMatchObject({
       id: "gpt-5.5",
@@ -1440,13 +1446,19 @@ describe("generate-openclaw-config.mts: config generation", () => {
     });
   });
 
-  it("does not activate the managed GPT-5.5 profile on chat completions", () => {
+  it("does not activate the managed GPT-5.5 profile on responses", () => {
     const config = runConfigScript({
       NEMOCLAW_MODEL: "gpt-5.5",
       NEMOCLAW_PROVIDER_KEY: "inference",
       NEMOCLAW_PRIMARY_MODEL_REF: "inference/gpt-5.5",
       NEMOCLAW_INFERENCE_BASE_URL: "https://inference.local/v1",
-      NEMOCLAW_INFERENCE_API: "openai-completions",
+      NEMOCLAW_INFERENCE_API: "openai-responses",
+      NEMOCLAW_MODEL_SPECIFIC_SETUP_DIR: path.join(
+        import.meta.dirname,
+        "..",
+        "nemoclaw-blueprint",
+        "model-specific-setup",
+      ),
     });
 
     expect(Object.keys(config.models.providers)).toEqual(["inference"]);

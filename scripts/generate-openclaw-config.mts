@@ -1007,7 +1007,7 @@ export function buildConfig(env: Env = process.env): JsonObject {
     providerKey === "inference" &&
     ["gpt-5.5", "openai/gpt-5.5", "grok-4.3"].includes(model) &&
     inferenceBaseUrl.replace(/\/+$/, "") === "https://inference.local/v1" &&
-    inferenceApi === "openai-responses";
+    inferenceApi === "openai-completions";
 
   function providerConfig(params: {
     modelName: string;
@@ -1051,7 +1051,6 @@ export function buildConfig(env: Env = process.env): JsonObject {
   const pluginEntries: JsonObject = {
     acpx: { enabled: false },
     bonjour: { enabled: false },
-    qqbot: { enabled: false },
     "openclaw-weixin": { enabled: true },
   };
   for (const ch of ["discord", "slack", "telegram", "whatsapp"]) {
@@ -1146,6 +1145,10 @@ export function buildConfig(env: Env = process.env): JsonObject {
   if (pluginLoadPaths.length > 0) {
     plugins.load = { paths: pluginLoadPaths };
   }
+  plugins.allow = Object.entries(pluginEntries)
+    .filter(([, entry]) => isObject(entry) && entry.enabled === true)
+    .map(([pluginId]) => pluginId)
+    .sort();
 
   const agentDefaults: JsonObject = {
     model: { primary: primaryModelRef },
