@@ -128,6 +128,8 @@ describe("docker-driver-gateway-launch", () => {
       if (!configPath) throw new Error("expected generated gateway config path");
       const config = fs.readFileSync(configPath, "utf-8");
       expect(config).toContain(`supervisor_bin = "${sandboxBin}"`);
+      expect(config).toContain("[openshell.gateway.auth]");
+      expect(config).toContain("allow_unauthenticated_users = true");
       expect(config).toContain("[openshell.gateway.gateway_jwt]");
       expect(config).toContain(
         `signing_key_path = "${path.join(stateDir, "tls", "jwt", "signing.pem")}"`,
@@ -148,6 +150,8 @@ describe("docker-driver-gateway-launch", () => {
     );
 
     expect(toml).toContain('compute_drivers = ["docker"]');
+    expect(toml).toContain("[openshell.gateway.auth]");
+    expect(toml).toContain("allow_unauthenticated_users = true");
     expect(toml).toContain("[openshell.gateway.gateway_jwt]");
     expect(toml).toContain(
       'signing_key_path = "/home/shadeform/.local/state/nemoclaw/openshell-docker-gateway/tls/jwt/signing.pem"',
