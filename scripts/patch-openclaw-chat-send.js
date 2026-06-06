@@ -124,7 +124,7 @@ function patchFollowupRunnerFile(file) {
     );
     if (next === source) {
       next = source.replace(
-        /(const admission = await admitReplyTurn\(\{\n\s*sessionId: run\.sessionId,\n\s*sessionKey: replySessionKey \?\? "",\n\s*kind: "queued_followup",\n\s*resetTriggered: false,\n\s*upstreamAbortSignal: queued\.abortSignal\n\s*\}\);[\s\S]*?replyOperation = admission\.operation;[\s\S]*?\n\s*)const runId = crypto\.randomUUID\(\);/,
+        /(const admission = await admitReplyTurn\(\{\n\s*sessionId: run\.sessionId,\n\s*sessionKey: replySessionKey \?\? "",\n\s*kind: "queued_followup",\n\s*resetTriggered: false,\n(?:\s*routeThreadId: queued\.originatingThreadId,\n)?\s*upstreamAbortSignal: queued\.abortSignal\n\s*\}\);[\s\S]*?replyOperation = admission\.operation;[\s\S]*?\n\s*)const runId = crypto\.randomUUID\(\);/,
         (_match, prefix) =>
           `${prefix}const runId = queued.runId ?? opts?.runId ?? crypto.randomUUID(); ` +
           `// nemoclaw: preserve chat.send run ids in followup queue (#2603, #3145)`,
@@ -181,6 +181,18 @@ function patchGetReplyFile(file) {
         `${indent}}; // nemoclaw: force webchat chat.send queued turns to keep per-message replies (#2603, #3145)\n` +
         `${indent}const piRuntime = useFastReplyRuntime ? null : await traceRunPhase("reply.load_pi_runtime", () => loadPiEmbeddedRuntime());`,
     );
+    if (next === source) {
+      next = source.replace(
+        /\n(\s*)const embeddedAgentRuntime = useFastReplyRuntime \? null : await traceRunPhase\("reply\.load_embedded_agent_runtime", \(\) => loadEmbeddedAgentRuntime\(\)\);/,
+        (_match, indent) =>
+          `\n${indent}if (opts?.runId && sessionCtx.Provider === "webchat" && resolvedQueue.mode === "steer") resolvedQueue = {\n` +
+          `${indent}\t...resolvedQueue,\n` +
+          `${indent}\tmode: "followup",\n` +
+          `${indent}\tdebounceMs: 0\n` +
+          `${indent}}; // nemoclaw: force webchat chat.send queued turns to keep per-message replies (#2603, #3145)\n` +
+          `${indent}const embeddedAgentRuntime = useFastReplyRuntime ? null : await traceRunPhase("reply.load_embedded_agent_runtime", () => loadEmbeddedAgentRuntime());`,
+      );
+    }
     if (next === source) {
       next = source.replace(
         /\n(\s*)const embeddedAgentRuntime = useFastReplyRuntime\n\s*\? null\n\s*: await traceRunPhase\("reply\.load_embedded_agent_runtime", \(\) => loadEmbeddedAgentRuntime\(\)\);/,
