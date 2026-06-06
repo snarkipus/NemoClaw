@@ -2945,11 +2945,6 @@ async function createSandbox(
   }
   messagingTokenDefs.push(
     {
-      name: `${sandboxName}-github`,
-      envKey: "GITHUB_TOKEN",
-      token: getOptionalProviderCredential("GITHUB_TOKEN"),
-    },
-    {
       name: `${sandboxName}-xai-search`,
       envKey: "XAI_API_KEY",
       token: getOptionalProviderCredential("XAI_API_KEY"),

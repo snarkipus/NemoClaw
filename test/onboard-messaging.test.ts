@@ -185,7 +185,6 @@ const { createSandbox, setupMessagingChannels } = require(${onboardPath});
       assert.match(telegramProvider.command, /--credential TELEGRAM_BOT_TOKEN/);
 
       const extraProviders = [
-        ["my-assistant-github", "GITHUB_TOKEN", "ghp-test-github-token-value"],
         ["my-assistant-xai-search", "XAI_API_KEY", "xai-test-token-value"],
         ["my-assistant-firecrawl", "FIRECRAWL_API_KEY", "fc-test-token-value"],
         ["my-assistant-agentmail", "AGENTMAIL_API_KEY", "am-test-token-value"],
@@ -198,6 +197,11 @@ const { createSandbox, setupMessagingChannels } = require(${onboardPath});
         assert.match(providerCommand.command, new RegExp(`--credential ${envKey}`));
         assert.equal(providerCommand.env?.[envKey], token);
       }
+      assert.equal(
+        providerCommands.some((e: CommandEntry) => e.command.includes("my-assistant-github")),
+        false,
+        "GITHUB_TOKEN must not be attached as a generic provider because it blocks gh auth login",
+      );
 
       // Verify sandbox create includes --provider flags for all attached providers.
       const createCommand = payload.commands.find((e: CommandEntry) =>
@@ -207,7 +211,7 @@ const { createSandbox, setupMessagingChannels } = require(${onboardPath});
       assert.match(createCommand.command, /--provider my-assistant-discord-bridge/);
       assert.match(createCommand.command, /--provider my-assistant-slack-bridge/);
       assert.match(createCommand.command, /--provider my-assistant-telegram-bridge/);
-      assert.match(createCommand.command, /--provider my-assistant-github/);
+      assert.doesNotMatch(createCommand.command, /--provider my-assistant-github/);
       assert.match(createCommand.command, /--provider my-assistant-xai-search/);
       assert.match(createCommand.command, /--provider my-assistant-firecrawl/);
       assert.match(createCommand.command, /--provider my-assistant-agentmail/);

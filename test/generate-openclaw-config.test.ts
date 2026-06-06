@@ -1431,7 +1431,7 @@ describe("generate-openclaw-config.mts: config generation", () => {
       vault: { renderMode: "obsidian" },
       vaultMode: "bridge",
     });
-    expect(config.env).toEqual({ GITHUB_TOKEN: "openshell:resolve:env:GITHUB_TOKEN" });
+    expect(config.env).toBeUndefined();
     expect(config.memory).toEqual({ backend: "qmd", qmd: { searchMode: "vsearch" } });
     expect(config.tools?.toolSearch).toEqual({
       enabled: true,

@@ -1197,7 +1197,6 @@ export function buildConfig(env: Env = process.env): JsonObject {
       target: "last",
     };
     config.agents.defaults.userTimezone = "America/New_York";
-    config.env = { GITHUB_TOKEN: "openshell:resolve:env:GITHUB_TOKEN" };
     config.memory = { backend: "qmd", qmd: { searchMode: "vsearch" } };
   }
 
