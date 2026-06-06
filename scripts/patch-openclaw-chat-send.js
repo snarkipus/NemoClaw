@@ -65,12 +65,13 @@ function patchChatSendFile(file) {
 
   if (!source.includes("suppressing empty final event")) {
     const next = source.replace(
-      /\n(\s*)broadcastChatFinal\(\{\n(\s*)context,\n\s*runId: clientRunId,\n\s*sessionKey,\n\s*message\n\s*\}\);/,
-      (_match, outerIndent, innerIndent) =>
+      /\n(\s*)broadcastChatFinal\(\{\n(\s*)context,\n\s*runId: clientRunId,\n\s*sessionKey,\n(?:(\s*)agentId,\n)?\s*message\n\s*\}\);/,
+      (_match, outerIndent, innerIndent, agentIdIndent) =>
         `\n${outerIndent}if (message) broadcastChatFinal({\n` +
         `${innerIndent}context,\n` +
         `${innerIndent}runId: clientRunId,\n` +
         `${innerIndent}sessionKey,\n` +
+        (agentIdIndent ? `${agentIdIndent}agentId,\n` : "") +
         `${innerIndent}message\n` +
         `${outerIndent}}); else context.logGateway.warn("webchat chat.send completed without visible assistant reply; suppressing empty final event (nemoclaw #2603/#3145)");`,
     );

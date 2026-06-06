@@ -15,7 +15,7 @@ const PATCH_SCRIPT = path.join(
   "patch-openclaw-chat-send.js",
 );
 
-function writeChatSendFixture(dist: string): string {
+function writeChatSendFixture(dist: string, options: { withAgentId?: boolean } = {}): string {
   const fixture = path.join(dist, "chat-fixture.js");
   fs.writeFileSync(
     fixture,
@@ -54,6 +54,7 @@ function writeChatSendFixture(dist: string): string {
       "          context,",
       "          runId: clientRunId,",
       "          sessionKey,",
+      ...(options.withAgentId ? ["          agentId,"] : []),
       "          message",
       "        });",
       "      }",
@@ -316,6 +317,27 @@ describe("OpenClaw chat.send compatibility patch", () => {
         1,
       );
       expect(rerunPatchedGetReply.match(/force webchat chat\.send queued turns/g)).toHaveLength(1);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("recognizes the OpenClaw 2026.6.1 chat.send final shape with agentId", () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "nemoclaw-openclaw-chat-send-agent-id-"));
+    const dist = path.join(tmp, "dist");
+    fs.mkdirSync(dist);
+    const chatFixture = writeChatSendFixture(dist, { withAgentId: true });
+    writeFollowupRunnerFixture(dist);
+    writeGetReplyFixture(dist);
+
+    try {
+      const patch = runPatch(dist);
+      expect(patch.status, `${patch.stdout}${patch.stderr}`).toBe(0);
+
+      const patched = fs.readFileSync(chatFixture, "utf-8");
+      expect(patched).toContain("if (message) broadcastChatFinal({");
+      expect(patched).toContain("          agentId,");
+      expect(patched).toContain("suppressing empty final event");
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });
     }
