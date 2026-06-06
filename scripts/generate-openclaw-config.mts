@@ -1003,15 +1003,11 @@ export function buildConfig(env: Env = process.env): JsonObject {
   const disableDeviceAuth = env.NEMOCLAW_DISABLE_DEVICE_AUTH === "1" || isRemote;
   const allowInsecure = parsed.scheme === "http";
 
-  const richOpenShellProfile =
-    providerKey === "xiaomi" ||
-    (providerKey === "openai" && ["gpt-5.5", "openai/gpt-5.5"].includes(model)) ||
-    (providerKey === "inference" &&
-      ["gpt-5.5", "openai/gpt-5.5", "grok-4.3"].includes(model) &&
-      inferenceBaseUrl.replace(/\/+$/, "") === "https://inference.local/v1" &&
-      inferenceApi === "openai-responses");
-  const gpt55OpenShellProfile =
-    richOpenShellProfile && ["gpt-5.5", "openai/gpt-5.5"].includes(model);
+  const managedOpenShellProfile =
+    providerKey === "inference" &&
+    ["gpt-5.5", "openai/gpt-5.5", "grok-4.3"].includes(model) &&
+    inferenceBaseUrl.replace(/\/+$/, "") === "https://inference.local/v1" &&
+    inferenceApi === "openai-responses";
 
   function providerConfig(params: {
     modelName: string;
@@ -1050,48 +1046,7 @@ export function buildConfig(env: Env = process.env): JsonObject {
     };
   }
 
-  let providers: JsonObject;
-  if (richOpenShellProfile) {
-    primaryModelRef = gpt55OpenShellProfile ? "openai/gpt-5.5" : "grok-4.3";
-    providers = {
-      xai: providerConfig({
-        modelName: "Grok 4.3",
-        api: "openai-responses",
-        modelId: "grok-4.3",
-        compat: {},
-        inputs: ["text", "image"],
-        reasoningValue: true,
-        contextWindowValue: 1000000,
-        maxTokensValue: 64000,
-        cost: { input: 1.25, output: 2.5, cacheRead: 0.2, cacheWrite: 0 },
-      }),
-      xiaomi: providerConfig({
-        modelName: "Xiaomi MiMo V2.5 Pro",
-        api: "openai-completions",
-        modelId: "mimo-v2.5-pro",
-        compat: { supportsStore: false },
-        inputs: ["text"],
-        reasoningValue: false,
-        contextWindowValue: 131072,
-        maxTokensValue: 4096,
-        cost: { input: 1, output: 3, cacheRead: 0.2, cacheWrite: 0 },
-      }),
-    };
-    if (gpt55OpenShellProfile) {
-      providers.openai = providerConfig({
-        modelName: "GPT-5.5",
-        api: "openai-responses",
-        modelId: "openai/gpt-5.5",
-        compat: { supportsStore: false },
-        inputs: ["text", "image"],
-        reasoningValue: true,
-        contextWindowValue: 400000,
-        maxTokensValue: 16192,
-      });
-    }
-  } else {
-    providers = { [providerKey]: providerConfig({ modelName: primaryModelRef }) };
-  }
+  const providers: JsonObject = { [providerKey]: providerConfig({ modelName: primaryModelRef }) };
 
   const pluginEntries: JsonObject = {
     acpx: { enabled: false },
@@ -1127,7 +1082,7 @@ export function buildConfig(env: Env = process.env): JsonObject {
     pluginEntries["diagnostics-otel"] = { enabled: true };
   }
   const xaiPluginBaseUrl = env.NEMOCLAW_XAI_PLUGIN_BASE_URL || "https://api.x.ai/v1";
-  if (richOpenShellProfile) {
+  if (managedOpenShellProfile) {
     pluginEntries.xai = {
       enabled: true,
       config: {
@@ -1139,7 +1094,6 @@ export function buildConfig(env: Env = process.env): JsonObject {
         codeExecution: { enabled: true },
       },
     };
-    pluginEntries.xiaomi = { enabled: true };
     pluginEntries.firecrawl = {
       enabled: true,
       config: {
@@ -1234,7 +1188,7 @@ export function buildConfig(env: Env = process.env): JsonObject {
       otel: openclawOtel,
     };
   }
-  if (richOpenShellProfile) {
+  if (managedOpenShellProfile) {
     config.agents.defaults.heartbeat ??= {
       every: "30m",
       lightContext: true,

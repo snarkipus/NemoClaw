@@ -1360,7 +1360,7 @@ describe("generate-openclaw-config.mts: config generation", () => {
     expect(config.tools?.toolSearch).toBe(false);
   });
 
-  it("matches the managed GPT-5.5 OpenShell profile without obsolete local-patch params", () => {
+  it("keeps managed GPT-5.5 on auth2api inference while enabling tool plugins", () => {
     const config = runConfigScript({
       NEMOCLAW_MODEL: "gpt-5.5",
       NEMOCLAW_PROVIDER_KEY: "inference",
@@ -1369,8 +1369,8 @@ describe("generate-openclaw-config.mts: config generation", () => {
       NEMOCLAW_INFERENCE_API: "openai-responses",
     });
 
-    expect(Object.keys(config.models.providers).sort()).toEqual(["openai", "xai", "xiaomi"]);
-    expect(config.agents.defaults.model.primary).toBe("openai/gpt-5.5");
+    expect(Object.keys(config.models.providers)).toEqual(["inference"]);
+    expect(config.agents.defaults.model.primary).toBe("inference/gpt-5.5");
     expect(config.agents.defaults.heartbeat).toEqual({
       every: "30m",
       lightContext: true,
@@ -1380,30 +1380,19 @@ describe("generate-openclaw-config.mts: config generation", () => {
     });
     expect(config.agents.defaults.userTimezone).toBe("America/New_York");
     expect(config.agents.defaults.models).toBeUndefined();
-    expect(config.models.providers.openai).toMatchObject({
+    expect(config.models.providers.inference).toMatchObject({
       baseUrl: "https://inference.local/v1",
       apiKey: "unused",
       api: "openai-responses",
     });
-    expect(config.models.providers.openai.models[0]).toMatchObject({
-      id: "openai/gpt-5.5",
-      name: "GPT-5.5",
-      reasoning: true,
-      input: ["text", "image"],
-      contextWindow: 400000,
-      maxTokens: 16192,
-      compat: { supportsStore: false },
+    expect(config.models.providers.inference.models[0]).toMatchObject({
+      id: "gpt-5.5",
+      name: "inference/gpt-5.5",
+      reasoning: false,
+      input: ["text"],
+      contextWindow: 131072,
+      maxTokens: 4096,
     });
-    expect(config.models.providers.xai.models[0]).toMatchObject({
-      id: "grok-4.3",
-      name: "Grok 4.3",
-      reasoning: true,
-      input: ["text", "image"],
-      contextWindow: 1000000,
-      maxTokens: 64000,
-    });
-    expect(config.models.providers.xai.api).toBe("openai-responses");
-    expect(config.models.providers.xiaomi.api).toBe("openai-completions");
     expect(config.plugins.entries.xai).toEqual({
       enabled: true,
       config: {
@@ -1415,7 +1404,7 @@ describe("generate-openclaw-config.mts: config generation", () => {
         codeExecution: { enabled: true },
       },
     });
-    expect(config.plugins.entries.xiaomi).toEqual({ enabled: true });
+    expect(config.plugins.entries.xiaomi).toBeUndefined();
     expect(config.plugins.entries.firecrawl.config.webFetch).toMatchObject({
       apiKey: "openshell:resolve:env:FIRECRAWL_API_KEY",
       baseUrl: "https://api.firecrawl.dev",
