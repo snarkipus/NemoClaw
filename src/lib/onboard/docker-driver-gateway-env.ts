@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+import { generateKeyPairSync, randomBytes } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -28,6 +29,7 @@ export const DOCKER_DRIVER_GATEWAY_RUNTIME_ENV_KEYS = [
   "OPENSHELL_SERVER_PORT",
   "OPENSHELL_DISABLE_TLS",
   "OPENSHELL_DISABLE_GATEWAY_AUTH",
+  "OPENSHELL_LOCAL_TLS_DIR",
   "OPENSHELL_DB_URL",
   "OPENSHELL_GRPC_ENDPOINT",
   "OPENSHELL_SSH_GATEWAY_HOST",
@@ -45,6 +47,13 @@ export interface BuildDockerDriverGatewayEnvOptions {
   dockerNetworkName?: string;
   getDockerSupervisorImage: () => string;
   resolveSandboxBin: () => string | null;
+}
+
+export interface DockerDriverGatewayJwtMaterial {
+  tlsDir: string;
+  signingKeyPath: string;
+  publicKeyPath: string;
+  kidPath: string;
 }
 
 export type PackageManagedDockerDriverGatewayWithEnvOverrideOptions = Omit<
@@ -89,7 +98,8 @@ export function buildDockerDriverGatewayEnv({
     OPENSHELL_DRIVERS: "docker",
     ...getGatewayStartNetworkEnv(),
     OPENSHELL_DISABLE_TLS: "true",
-    OPENSHELL_DISABLE_GATEWAY_AUTH: "true",
+    OPENSHELL_DISABLE_GATEWAY_AUTH: "false",
+    OPENSHELL_LOCAL_TLS_DIR: getDockerDriverGatewayTlsDir(stateDir),
     OPENSHELL_DB_URL: `sqlite:${path.join(stateDir, "openshell.db")}`,
     OPENSHELL_GRPC_ENDPOINT: getDockerDriverGatewayEndpoint(),
     OPENSHELL_DOCKER_NETWORK_NAME: dockerNetworkName,
@@ -102,6 +112,57 @@ export function buildDockerDriverGatewayEnv({
     }
   }
   return env;
+}
+
+export function getDockerDriverGatewayTlsDir(stateDir: string): string {
+  return path.join(stateDir, "tls");
+}
+
+export function getDockerDriverGatewayJwtMaterial(
+  stateDir: string,
+): DockerDriverGatewayJwtMaterial {
+  const tlsDir = getDockerDriverGatewayTlsDir(stateDir);
+  const jwtDir = path.join(tlsDir, "jwt");
+  return {
+    tlsDir,
+    signingKeyPath: path.join(jwtDir, "signing.pem"),
+    publicKeyPath: path.join(jwtDir, "public.pem"),
+    kidPath: path.join(jwtDir, "kid"),
+  };
+}
+
+export function ensureDockerDriverGatewayJwtMaterial(
+  stateDir: string,
+): DockerDriverGatewayJwtMaterial {
+  const material = getDockerDriverGatewayJwtMaterial(stateDir);
+  const files = [material.signingKeyPath, material.publicKeyPath, material.kidPath];
+  const present = files.filter((file) => fs.existsSync(file)).length;
+  if (present === files.length) return material;
+  if (present !== 0) {
+    throw new Error(
+      `Partial OpenShell sandbox JWT material in ${path.dirname(material.signingKeyPath)}; expected signing.pem, public.pem, and kid`,
+    );
+  }
+
+  fs.mkdirSync(path.dirname(material.signingKeyPath), { recursive: true, mode: 0o700 });
+  fs.chmodSync(material.tlsDir, 0o700);
+  fs.chmodSync(path.dirname(material.signingKeyPath), 0o700);
+  const { privateKey, publicKey } = generateKeyPairSync("ed25519");
+  fs.writeFileSync(
+    material.signingKeyPath,
+    privateKey.export({ type: "pkcs8", format: "pem" }),
+    { encoding: "utf-8", mode: 0o600 },
+  );
+  fs.writeFileSync(
+    material.publicKeyPath,
+    publicKey.export({ type: "spki", format: "pem" }),
+    { encoding: "utf-8", mode: 0o644 },
+  );
+  fs.writeFileSync(material.kidPath, `${randomBytes(16).toString("hex")}\n`, {
+    encoding: "utf-8",
+    mode: 0o644,
+  });
+  return material;
 }
 
 export function buildDockerGatewayDebEnvFile(

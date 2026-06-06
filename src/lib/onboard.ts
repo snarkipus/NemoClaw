@@ -1461,9 +1461,11 @@ function getDockerDriverGatewayEnv(
   versionOutput: string | null = null,
   platform: NodeJS.Platform = process.platform,
 ): Record<string, string> {
+  const stateDir = getDockerDriverGatewayStateDir();
+  dockerDriverGatewayEnv.ensureDockerDriverGatewayJwtMaterial(stateDir);
   return dockerDriverGatewayEnv.buildDockerDriverGatewayEnv({
     platform,
-    stateDir: getDockerDriverGatewayStateDir(),
+    stateDir,
     dockerNetworkName: process.env.OPENSHELL_DOCKER_NETWORK_NAME || "openshell-docker",
     getDockerSupervisorImage: () => getOpenShellDockerSupervisorImage(versionOutput),
     resolveSandboxBin: resolveOpenShellSandboxBinary,

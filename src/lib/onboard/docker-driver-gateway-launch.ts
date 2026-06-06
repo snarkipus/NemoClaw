@@ -183,6 +183,7 @@ export function buildDockerDriverGatewayConfigToml(
   gatewayEnv: Record<string, string>,
   sandboxBin: string,
 ): string {
+  const localTlsDir = gatewayEnv.OPENSHELL_LOCAL_TLS_DIR;
   const dockerEntries: [string, string | undefined][] = [
     ["grpc_endpoint", gatewayEnv.OPENSHELL_GRPC_ENDPOINT],
     ["network_name", gatewayEnv.OPENSHELL_DOCKER_NETWORK_NAME],
@@ -197,12 +198,26 @@ export function buildDockerDriverGatewayConfigToml(
     .map(([key, value]) => `${key} = ${tomlString(value)}`)
     .join("\n");
 
+  const gatewayJwtConfig =
+    typeof localTlsDir === "string" && localTlsDir.trim()
+      ? [
+          "",
+          "[openshell.gateway.gateway_jwt]",
+          `signing_key_path = ${tomlString(`${localTlsDir}/jwt/signing.pem`)}`,
+          `public_key_path = ${tomlString(`${localTlsDir}/jwt/public.pem`)}`,
+          `kid_path = ${tomlString(`${localTlsDir}/jwt/kid`)}`,
+          'gateway_id = "openshell"',
+          "ttl_secs = 0",
+        ]
+      : [];
+
   return [
     "[openshell]",
     "version = 1",
     "",
     "[openshell.gateway]",
     'compute_drivers = ["docker"]',
+    ...gatewayJwtConfig,
     "",
     "[openshell.drivers.docker]",
     dockerConfig,

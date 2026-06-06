@@ -89,6 +89,7 @@ describe("docker-driver-gateway-launch", () => {
         gatewayEnv: {
           OPENSHELL_DB_URL: `sqlite:${path.join(stateDir, "openshell.db")}`,
           OPENSHELL_DRIVERS: "docker",
+          OPENSHELL_LOCAL_TLS_DIR: path.join(stateDir, "tls"),
         },
       });
 
@@ -125,7 +126,12 @@ describe("docker-driver-gateway-launch", () => {
       expect(configPath).toBe(path.join(stateDir, "openshell-gateway.toml"));
       expect(configPath).toBeDefined();
       if (!configPath) throw new Error("expected generated gateway config path");
-      expect(fs.readFileSync(configPath, "utf-8")).toContain(`supervisor_bin = "${sandboxBin}"`);
+      const config = fs.readFileSync(configPath, "utf-8");
+      expect(config).toContain(`supervisor_bin = "${sandboxBin}"`);
+      expect(config).toContain("[openshell.gateway.gateway_jwt]");
+      expect(config).toContain(
+        `signing_key_path = "${path.join(stateDir, "tls", "jwt", "signing.pem")}"`,
+      );
     });
   });
 
@@ -135,11 +141,19 @@ describe("docker-driver-gateway-launch", () => {
         OPENSHELL_GRPC_ENDPOINT: "http://127.0.0.1:8080",
         OPENSHELL_DOCKER_NETWORK_NAME: "openshell-docker",
         OPENSHELL_DOCKER_SUPERVISOR_IMAGE: "ghcr.io/nvidia/openshell/supervisor:0.0.44",
+        OPENSHELL_LOCAL_TLS_DIR:
+          "/home/shadeform/.local/state/nemoclaw/openshell-docker-gateway/tls",
       },
       "/home/shadeform/.local/bin/openshell-sandbox",
     );
 
     expect(toml).toContain('compute_drivers = ["docker"]');
+    expect(toml).toContain("[openshell.gateway.gateway_jwt]");
+    expect(toml).toContain(
+      'signing_key_path = "/home/shadeform/.local/state/nemoclaw/openshell-docker-gateway/tls/jwt/signing.pem"',
+    );
+    expect(toml).toContain('gateway_id = "openshell"');
+    expect(toml).toContain("ttl_secs = 0");
     expect(toml).toContain('grpc_endpoint = "http://127.0.0.1:8080"');
     expect(toml).toContain('network_name = "openshell-docker"');
     expect(toml).toContain(
