@@ -15,10 +15,11 @@ const REVIEWED_OPENCLAW_PATCH_CLASSIFIER_VERSIONS = [
   "2026.5.18",
   "2026.5.22",
   "2026.5.27",
+  "2026.6.1",
 ] as const;
-const CURRENT_REVIEWED_OPENCLAW_PATCH_CLASSIFIER_VERSION = "2026.5.27";
+const CURRENT_REVIEWED_OPENCLAW_PATCH_CLASSIFIER_VERSION = "2026.6.1";
 const EXPECTED_OPENCLAW_INTEGRITY =
-  "sha512-2N93zhdAo88KAbHt6T7KvYXf4s7XIkYXBgv1npYpn7e1Y9FvrtgtpsA38my9rtFW+70uXEojRPX5/OqnuDqJPw==";
+  "sha512-rGSwhIo8N37cQQ5puG8vmWZESE8q/ych5VFpzOQNcf49TF/rvCYyxiNAyot11qbUZF5wfLh8bsvofapnOEh0BQ==";
 const REVIEWED_OPENCLAW_2026_5_27_WEB_FETCH_SHAPE = [
   "async function fetchWithWebToolsNetworkGuard(params) {",
   "  const { timeoutSeconds, useEnvProxy, ...rest } = params;",
@@ -129,7 +130,7 @@ function readDockerfileOpenClawVersion(): string {
 function readDockerfileBaseOpenClawIntegrity(): string {
   return readRequiredMatch(
     DOCKERFILE_BASE,
-    /^ARG OPENCLAW_2026_5_27_INTEGRITY=([^\s]+)/m,
+    /^ARG OPENCLAW_2026_6_1_INTEGRITY=([^\s]+)/m,
     "OpenClaw base image integrity",
   );
 }
@@ -137,7 +138,7 @@ function readDockerfileBaseOpenClawIntegrity(): string {
 function readDockerfileOpenClawIntegrity(): string {
   return readRequiredMatch(
     DOCKERFILE,
-    /^ARG OPENCLAW_2026_5_27_INTEGRITY=([^\s]+)/m,
+    /^ARG OPENCLAW_2026_6_1_INTEGRITY=([^\s]+)/m,
     "OpenClaw runtime integrity",
   );
 }
@@ -188,12 +189,12 @@ function runOpenClawUpgradeBlock(currentVersion: string) {
     "set -euo pipefail",
     `call_log=${JSON.stringify(log)}`,
     `OPENCLAW_VERSION=${JSON.stringify(openclawVersion)}`,
-    `OPENCLAW_2026_5_27_INTEGRITY=${JSON.stringify(openclawIntegrity)}`,
+    `OPENCLAW_2026_6_1_INTEGRITY=${JSON.stringify(openclawIntegrity)}`,
     `openclaw() { if [ "\${1:-}" = "--version" ]; then printf 'openclaw ${currentVersion}\\n'; else return 127; fi; }`,
     "npm() {",
     '  printf "npm %s\\n" "$*" >> "$call_log";',
     '  if [ "${1:-}" = "view" ] && [ "${2:-}" = "openclaw@${OPENCLAW_VERSION}" ] && [ "${3:-}" = "dist.integrity" ]; then',
-    '    printf "%s\\n" "$OPENCLAW_2026_5_27_INTEGRITY";',
+    '    printf "%s\\n" "$OPENCLAW_2026_6_1_INTEGRITY";',
     "  fi",
     "}",
     'command() { if [ "${1:-}" = "-v" ] && [ "${2:-}" = "codex-acp" ]; then return 0; fi; builtin command "$@"; }',
