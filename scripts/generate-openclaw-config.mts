@@ -1205,9 +1205,22 @@ export function buildConfig(env: Env = process.env): JsonObject {
 
   const tools = config.tools;
   tools.web ??= {};
-  tools.web.fetch = { enabled: true, useTrustedEnvProxy: true };
+  tools.web.fetch = {
+    enabled: true,
+    provider: "firecrawl",
+    timeoutSeconds: 30,
+    cacheTtlMinutes: 15,
+    useTrustedEnvProxy: true,
+  };
 
-  if (env.NEMOCLAW_WEB_SEARCH_ENABLED === "1") {
+  if (managedOpenShellProfile) {
+    tools.web.search = {
+      enabled: true,
+      provider: "grok",
+      timeoutSeconds: 30,
+      cacheTtlMinutes: 15,
+    };
+  } else if (env.NEMOCLAW_WEB_SEARCH_ENABLED === "1") {
     tools.web.search = {
       enabled: true,
       provider: "brave",

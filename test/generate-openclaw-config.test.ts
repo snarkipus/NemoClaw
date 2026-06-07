@@ -1439,10 +1439,19 @@ describe("generate-openclaw-config.mts: config generation", () => {
     });
     expect(config.env).toBeUndefined();
     expect(config.memory).toEqual({ backend: "qmd", qmd: { searchMode: "vsearch" } });
-    expect(config.tools?.toolSearch).toEqual({
+    expect(config.tools?.toolSearch).toBe(false);
+    expect(config.tools?.web?.search).toEqual({
       enabled: true,
-      mode: "code",
-      codeTimeoutMs: 30000,
+      provider: "grok",
+      timeoutSeconds: 30,
+      cacheTtlMinutes: 15,
+    });
+    expect(config.tools?.web?.fetch).toEqual({
+      enabled: true,
+      provider: "firecrawl",
+      timeoutSeconds: 30,
+      cacheTtlMinutes: 15,
+      useTrustedEnvProxy: true,
     });
   });
 
